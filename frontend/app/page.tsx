@@ -48,7 +48,7 @@ export default function DashboardPage() {
       </Card>
 
       <Card title="Latest Posts" subtitle="Recent generated drafts and published content">
-        <div className="table">
+        <div className="table table--3">
           <div className="table__head">
             <span>Topic</span>
             <span>Status</span>

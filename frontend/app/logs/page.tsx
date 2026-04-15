@@ -16,7 +16,7 @@ export default function LogsPage() {
   return (
     <div className="stack">
       <Card title="System Logs" subtitle="Error tracking and applied fixes">
-        <div className="table">
+        <div className="table table--4">
           <div className="table__head">
             <span>Level</span>
             <span>Type</span>

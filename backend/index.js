@@ -11,8 +11,28 @@ const { logInfo, logError } = require("./src/services/logger");
 
 const app = express();
 const env = loadEnv();
+const allowedOrigins = env.corsOrigin
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter((origin) => origin && origin !== "*");
 
-app.use(cors({ origin: env.corsOrigin }));
+app.use(
+  cors({
+    origin(origin, callback) {
+      if (!origin) {
+        callback(null, true);
+        return;
+      }
+
+      if (allowedOrigins.includes(origin)) {
+        callback(null, true);
+        return;
+      }
+
+      callback(new Error("Origin not allowed by CORS"));
+    },
+  })
+);
 app.use(express.json({ limit: "1mb" }));
 
 app.get("/health", (_req, res) => {

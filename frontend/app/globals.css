@@ -154,11 +154,19 @@ body {
 .table__head,
 .table__row {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(var(--table-columns, 4), minmax(0, 1fr));
   gap: 8px;
   align-items: center;
   padding: 10px;
   border-radius: 10px;
+}
+
+.table.table--3 {
+  --table-columns: 3;
+}
+
+.table.table--4 {
+  --table-columns: 4;
 }
 
 .table__head {
