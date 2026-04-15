@@ -8,6 +8,9 @@ const {
 } = require("./agents");
 const { savePost, saveMetric } = require("./db");
 const { logInfo, logError } = require("./logger");
+const { loadEnv } = require("../config/env");
+
+const env = loadEnv();
 
 function categorizeError(error) {
   const message = String(error?.message || "").toLowerCase();
@@ -37,12 +40,13 @@ async function runContentPipeline(topic) {
       status: "generated",
     });
 
+    const ranges = env.seedMetricsRanges;
     const seedMetrics = await saveMetric({
       post_id: post.id,
-      impressions: Math.floor(Math.random() * 200 + 100),
-      likes: Math.floor(Math.random() * 20 + 3),
-      comments: Math.floor(Math.random() * 8 + 1),
-      shares: Math.floor(Math.random() * 5 + 1),
+      impressions: Math.floor(Math.random() * (ranges.impressionsMax - ranges.impressionsMin) + ranges.impressionsMin),
+      likes: Math.floor(Math.random() * (ranges.likesMax - ranges.likesMin) + ranges.likesMin),
+      comments: Math.floor(Math.random() * (ranges.commentsMax - ranges.commentsMin) + ranges.commentsMin),
+      shares: Math.floor(Math.random() * (ranges.sharesMax - ranges.sharesMin) + ranges.sharesMin),
     });
 
     const learning = await learningAgent(seedMetrics);
