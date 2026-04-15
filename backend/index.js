@@ -14,13 +14,13 @@ const env = loadEnv();
 const allowedOrigins = env.corsOrigin
   .split(",")
   .map((origin) => origin.trim())
-  .filter((origin) => origin && origin !== "*");
+  .filter((origin) => origin);
 
 app.use(
   cors({
     origin(origin, callback) {
       if (!origin) {
-        callback(null, true);
+        callback(new Error("Missing request origin"));
         return;
       }
 

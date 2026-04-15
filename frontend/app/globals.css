@@ -154,7 +154,7 @@ body {
 .table__head,
 .table__row {
   display: grid;
-  grid-template-columns: repeat(var(--table-columns, 4), minmax(0, 1fr));
+  grid-template-columns: repeat(var(--table-columns), minmax(0, 1fr));
   gap: 8px;
   align-items: center;
   padding: 10px;
