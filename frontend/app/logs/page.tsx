@@ -23,7 +23,7 @@ export default function LogsPage() {
             <span>Cause</span>
             <span>Fix Applied</span>
           </div>
-          {logs.length === 0 && <div className="table__row">No logs available.</div>}
+          {logs.length === 0 && <div className="table__empty">No logs available.</div>}
           {logs.map((log) => (
             <div className="table__row" key={log.id}>
               <span>{log.level}</span>

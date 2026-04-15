@@ -20,7 +20,7 @@ app.use(
   cors({
     origin(origin, callback) {
       if (!origin) {
-        callback(new Error("Missing request origin"));
+        callback(null, true);
         return;
       }
 

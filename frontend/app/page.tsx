@@ -54,7 +54,7 @@ export default function DashboardPage() {
             <span>Status</span>
             <span>Created</span>
           </div>
-          {posts.length === 0 && <div className="table__row">No posts yet.</div>}
+          {posts.length === 0 && <div className="table__empty">No posts yet.</div>}
           {posts.map((post) => (
             <div className="table__row" key={post.id}>
               <span>{post.topic}</span>
