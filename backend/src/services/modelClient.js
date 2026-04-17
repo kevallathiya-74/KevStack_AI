@@ -4,15 +4,38 @@ const { logError } = require("./logger");
 
 const env = loadEnv();
 
-async function runHfModel(model, prompt, fallbackText) {
+function extractHfError(error) {
+  const responseData = error?.response?.data;
+
+  if (typeof responseData === "string" && responseData.trim()) {
+    return responseData;
+  }
+
+  if (typeof responseData?.error === "string") {
+    return responseData.error;
+  }
+
+  if (typeof responseData?.error?.message === "string") {
+    return responseData.error.message;
+  }
+
+  return error?.message || "Hugging Face request failed";
+}
+
+async function runHfModel(model, prompt) {
   if (!env.huggingFaceApiToken) {
-    return fallbackText;
+    throw new Error("HUGGING_FACE_API_TOKEN is required for real model inference.");
   }
 
   try {
     const response = await axios.post(
-      `https://api-inference.huggingface.co/models/${model}`,
-      { inputs: prompt },
+      "https://router.huggingface.co/v1/chat/completions",
+      {
+        model,
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.2,
+        max_tokens: 900,
+      },
       {
         headers: {
           Authorization: `Bearer ${env.huggingFaceApiToken}`,
@@ -23,20 +46,23 @@ async function runHfModel(model, prompt, fallbackText) {
     );
 
     const body = response.data;
-    if (Array.isArray(body) && body[0]?.generated_text) {
-      return body[0].generated_text;
+    const content = body?.choices?.[0]?.message?.content;
+    if (typeof content === "string" && content.trim()) {
+      return content.trim();
     }
 
-    if (typeof body === "string") {
-      return body;
+    if (body?.error) {
+      throw new Error(`Model response error: ${JSON.stringify(body.error)}`);
     }
 
-    return fallbackText;
+    throw new Error("Model returned an unsupported response payload.");
   } catch (error) {
-    logError("API_FAILURE", error.message, "Fell back to local deterministic generator", {
+    const cause = extractHfError(error);
+    logError("API_FAILURE", cause, "Generation failed without local fallback", {
       model,
+      status: error?.response?.status,
     });
-    return fallbackText;
+    throw new Error(cause);
   }
 }
 

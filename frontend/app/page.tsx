@@ -4,21 +4,26 @@ import { useEffect, useMemo, useState } from "react";
 import { Card } from "@/components/ui/Card";
 import { MetricCard } from "@/components/ui/MetricCard";
 import { EngagementChart } from "@/components/charts/EngagementChart";
-import { fetchDashboard, DashboardMetric, DashboardPost } from "@/lib/api";
+import { fetchDashboard, DashboardMetric, DashboardPost, getUserFriendlyError } from "@/lib/api";
 
 export default function DashboardPage() {
   const [metrics, setMetrics] = useState<DashboardMetric[]>([]);
   const [posts, setPosts] = useState<DashboardPost[]>([]);
+  const [status, setStatus] = useState("Loading dashboard data...");
+  const [statusTone, setStatusTone] = useState<"neutral" | "error">("neutral");
 
   useEffect(() => {
     fetchDashboard()
       .then((data) => {
         setMetrics(data.metrics || []);
         setPosts(data.posts || []);
+        setStatus("");
       })
-      .catch(() => {
+      .catch((error) => {
         setMetrics([]);
         setPosts([]);
+        setStatus(getUserFriendlyError(error, "Unable to load dashboard data right now."));
+        setStatusTone("error");
       });
   }, []);
 
@@ -36,6 +41,8 @@ export default function DashboardPage() {
 
   return (
     <div className="stack">
+      {status && <p className={`status status--${statusTone}`}>{status}</p>}
+
       <div className="metrics-grid">
         <MetricCard label="Total Impressions" value={totals.impressions} />
         <MetricCard label="Total Likes" value={totals.likes} />

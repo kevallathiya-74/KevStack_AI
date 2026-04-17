@@ -235,6 +235,18 @@ body {
   color: var(--muted);
 }
 
+.status--neutral {
+  color: var(--muted);
+}
+
+.status--success {
+  color: #166534;
+}
+
+.status--error {
+  color: #b91c1c;
+}
+
 .actions {
   display: flex;
   gap: 10px;

@@ -4,18 +4,21 @@ const { loadEnv } = require("../config/env");
 let pool = null;
 const env = loadEnv();
 
-const memoryDb = {
-  posts: [],
-  metrics: [],
-  logs: [],
-};
+function requirePool() {
+  if (!pool) {
+    throw new Error("Database is not initialized. Set DATABASE_URL and restart backend.");
+  }
+
+  return pool;
+}
 
 async function initDatabase() {
   if (!env.databaseUrl) {
-    return;
+    throw new Error("DATABASE_URL is required. In-memory fallback has been removed.");
   }
 
   pool = new Pool({ connectionString: env.databaseUrl });
+  await pool.query("SELECT 1");
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS posts (
@@ -52,24 +55,18 @@ async function initDatabase() {
       created_at TIMESTAMP DEFAULT NOW()
     )
   `);
-}
 
-function isPgEnabled() {
-  return Boolean(pool);
+  await pool.query("CREATE INDEX IF NOT EXISTS idx_posts_created_at ON posts(created_at DESC)");
+  await pool.query("CREATE INDEX IF NOT EXISTS idx_posts_status ON posts(status)");
+  await pool.query("CREATE INDEX IF NOT EXISTS idx_metrics_post_id ON metrics(post_id)");
+  await pool.query("CREATE INDEX IF NOT EXISTS idx_metrics_created_at ON metrics(created_at DESC)");
+  await pool.query("CREATE INDEX IF NOT EXISTS idx_logs_created_at ON logs(created_at DESC)");
 }
 
 async function savePost(post) {
-  if (!isPgEnabled()) {
-    const record = {
-      id: memoryDb.posts.length + 1,
-      created_at: new Date().toISOString(),
-      ...post,
-    };
-    memoryDb.posts.unshift(record);
-    return record;
-  }
+  const client = requirePool();
 
-  const result = await pool.query(
+  const result = await client.query(
     `
       INSERT INTO posts (topic, content, hooks, cta, status)
       VALUES ($1, $2, $3::jsonb, $4, $5)
@@ -82,17 +79,9 @@ async function savePost(post) {
 }
 
 async function saveMetric(metric) {
-  if (!isPgEnabled()) {
-    const record = {
-      id: memoryDb.metrics.length + 1,
-      created_at: new Date().toISOString(),
-      ...metric,
-    };
-    memoryDb.metrics.unshift(record);
-    return record;
-  }
+  const client = requirePool();
 
-  const result = await pool.query(
+  const result = await client.query(
     `
       INSERT INTO metrics (post_id, impressions, likes, comments, shares)
       VALUES ($1, $2, $3, $4, $5)
@@ -105,17 +94,9 @@ async function saveMetric(metric) {
 }
 
 async function saveLog(log) {
-  if (!isPgEnabled()) {
-    const record = {
-      id: memoryDb.logs.length + 1,
-      created_at: new Date().toISOString(),
-      ...log,
-    };
-    memoryDb.logs.unshift(record);
-    return record;
-  }
+  const client = requirePool();
 
-  const result = await pool.query(
+  const result = await client.query(
     `
       INSERT INTO logs (level, type, cause, fix_applied, details)
       VALUES ($1, $2, $3, $4, $5::jsonb)
@@ -128,29 +109,29 @@ async function saveLog(log) {
 }
 
 async function getRecentPosts(limit = 10) {
-  if (!isPgEnabled()) {
-    return memoryDb.posts.slice(0, limit);
-  }
+  const client = requirePool();
 
-  const result = await pool.query("SELECT * FROM posts ORDER BY created_at DESC LIMIT $1", [limit]);
+  const result = await client.query("SELECT * FROM posts ORDER BY created_at DESC LIMIT $1", [limit]);
   return result.rows;
 }
 
-async function getRecentMetrics(limit = 20) {
-  if (!isPgEnabled()) {
-    return memoryDb.metrics.slice(0, limit);
-  }
+async function getPostById(id) {
+  const client = requirePool();
+  const result = await client.query("SELECT * FROM posts WHERE id = $1 LIMIT 1", [id]);
+  return result.rows[0] || null;
+}
 
-  const result = await pool.query("SELECT * FROM metrics ORDER BY created_at DESC LIMIT $1", [limit]);
+async function getRecentMetrics(limit = 20) {
+  const client = requirePool();
+
+  const result = await client.query("SELECT * FROM metrics ORDER BY created_at DESC LIMIT $1", [limit]);
   return result.rows;
 }
 
 async function getRecentLogs(limit = 50) {
-  if (!isPgEnabled()) {
-    return memoryDb.logs.slice(0, limit);
-  }
+  const client = requirePool();
 
-  const result = await pool.query("SELECT * FROM logs ORDER BY created_at DESC LIMIT $1", [limit]);
+  const result = await client.query("SELECT * FROM logs ORDER BY created_at DESC LIMIT $1", [limit]);
   return result.rows;
 }
 
@@ -160,6 +141,7 @@ module.exports = {
   saveMetric,
   saveLog,
   getRecentPosts,
+  getPostById,
   getRecentMetrics,
   getRecentLogs,
 };

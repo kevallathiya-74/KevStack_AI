@@ -14,6 +14,14 @@ export function EngagementChart({ metrics }: Props) {
     likes: item.likes,
   }));
 
+  if (!chartData.length) {
+    return (
+      <div className="chart-wrap">
+        <div className="table__empty">No real metrics yet. Add live metrics to display the engagement trend graph.</div>
+      </div>
+    );
+  }
+
   return (
     <div className="chart-wrap">
       <ResponsiveContainer width="100%" height={280}>

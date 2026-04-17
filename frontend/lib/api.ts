@@ -7,6 +7,62 @@ export const api = axios.create({
   timeout: 20000,
 });
 
+type ApiErrorPayload = {
+  error?: string;
+  message?: string;
+};
+
+export function getUserFriendlyError(error: unknown, fallbackMessage: string) {
+  if (axios.isAxiosError(error)) {
+    const status = error.response?.status;
+    const payload = (error.response?.data || {}) as ApiErrorPayload;
+    const code = typeof payload.error === "string" ? payload.error : "";
+    const message = typeof payload.message === "string" ? payload.message.trim() : "";
+
+    if (code === "validation_error" && message) {
+      return message;
+    }
+
+    if (code === "rate_limit_exceeded") {
+      return "Too many requests right now. Please wait a minute and try again.";
+    }
+
+    if (status === 400) {
+      return message || "Please review the input and try again.";
+    }
+
+    if (status === 401 || status === 403) {
+      return "Authorization failed. Please check backend API configuration.";
+    }
+
+    if (status === 404) {
+      return message || "Requested data was not found.";
+    }
+
+    if (status === 429) {
+      return "Too many requests right now. Please wait and retry.";
+    }
+
+    if (status === 503 || status === 504) {
+      return message || "Content service is temporarily unavailable. Please retry shortly.";
+    }
+
+    if (status && status >= 500) {
+      return "Server is temporarily unavailable. Please try again shortly.";
+    }
+
+    if (error.code === "ECONNABORTED") {
+      return "The request timed out. Please try again.";
+    }
+
+    if (!error.response) {
+      return "Cannot connect to backend service. Please ensure the backend server is running.";
+    }
+  }
+
+  return fallbackMessage;
+}
+
 export type DashboardMetric = {
   id: number;
   post_id?: number;
@@ -43,6 +99,11 @@ export async function fetchDashboard() {
 
 export async function generateContent(topic: string) {
   const { data } = await api.post("/api/content/generate", { topic });
+  return data;
+}
+
+export async function generateContentFromData() {
+  const { data } = await api.post("/api/content/generate-from-data");
   return data;
 }
 
