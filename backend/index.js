@@ -22,7 +22,7 @@ const generationRequestLog = new Map();
 function validateRuntimeConfiguration() {
   const missing = [];
   if (!env.databaseUrl) missing.push("DATABASE_URL");
-  if (!env.huggingFaceApiToken) missing.push("HUGGING_FACE_API_TOKEN");
+  if (!env.huggingFaceApiToken) missing.push("HF_TOKEN");
 
   if (missing.length) {
     throw new Error(`Missing required environment variables: ${missing.join(", ")}`);
@@ -34,6 +34,10 @@ function validateRuntimeConfiguration() {
 
   if (!Number.isInteger(env.maxMetricValue) || env.maxMetricValue < 1) {
     throw new Error("MAX_METRIC_VALUE must be a positive integer.");
+  }
+
+  if (!Number.isInteger(env.linkedInMaxActionsPerDay) || env.linkedInMaxActionsPerDay < 1) {
+    throw new Error("LINKEDIN_MAX_ACTIONS_PER_DAY must be a positive integer.");
   }
 }
 
@@ -90,19 +94,42 @@ app.use("/api", createApiRouter());
 app.use((err, _req, res, _next) => {
   if (err?.type === "entity.parse.failed") {
     res.status(400).json({
-      error: "validation_error",
-      message: "Invalid JSON body. Please send a valid JSON payload.",
+      success: false,
+      data: null,
+      error: {
+        code: "validation_error",
+        message: "Invalid JSON body. Please send a valid JSON payload.",
+      },
     });
     return;
   }
 
-  logError("API_FAILURE", err?.message || "Unhandled backend error", "Global error middleware response", {
-    stack: err?.stack,
-  });
+  const status = Number.isInteger(err?.status) ? err.status : 500;
+  const code = typeof err?.code === "string" && err.code ? err.code : "internal_server_error";
+  const message =
+    status >= 500 ? "An unexpected error occurred." : err?.message || "Request could not be completed.";
 
-  res.status(500).json({
-    error: "internal_server_error",
-    message: "An unexpected error occurred.",
+  if (status >= 500) {
+    logError("API_FAILURE", err?.message || "Unhandled backend error", "Global error middleware response", {
+      stack: err?.stack,
+      status: err?.status,
+      code: err?.code,
+    });
+  } else {
+    logInfo("Client request rejected", {
+      status,
+      code,
+      message,
+    });
+  }
+
+  res.status(status).json({
+    success: false,
+    data: null,
+    error: {
+      code,
+      message,
+    },
   });
 });
 

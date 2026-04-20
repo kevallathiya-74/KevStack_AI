@@ -18,11 +18,14 @@ export default function AutomationControlPage() {
       return;
     }
 
-    setStatus("Generating post...");
+    setStatus("Step 1/4: validating topic...");
     setStatusTone("neutral");
     try {
-      await generateContent(normalizedTopic);
-      setStatus("Generated successfully.");
+      setStatus("Step 2/4: analyzing historical performance...");
+      const generationPromise = generateContent(normalizedTopic);
+      setStatus("Step 3/4: generating content, hooks, and CTA...");
+      await generationPromise;
+      setStatus("Step 4/4: generated successfully.");
       setStatusTone("success");
     } catch (error) {
       setStatus(getUserFriendlyError(error, "Generation failed. Please try again."));
@@ -42,7 +45,8 @@ export default function AutomationControlPage() {
     setStatusTone("neutral");
     try {
       const result = await publishPost({ content: payload });
-      setStatus(result.reason);
+      const mode = result.mode ? ` [mode: ${result.mode}]` : "";
+      setStatus(`${result.reason}${mode}`);
       setStatusTone(result.published ? "success" : "neutral");
     } catch (error) {
       setStatus(getUserFriendlyError(error, "Publish failed. Please try again."));

@@ -25,6 +25,7 @@ async function initDatabase() {
       id SERIAL PRIMARY KEY,
       topic TEXT NOT NULL,
       content TEXT NOT NULL,
+      hook TEXT,
       hooks JSONB NOT NULL,
       cta TEXT,
       status TEXT NOT NULL,
@@ -49,12 +50,16 @@ async function initDatabase() {
       id SERIAL PRIMARY KEY,
       level TEXT NOT NULL,
       type TEXT,
+      message TEXT,
       cause TEXT,
       fix_applied TEXT,
       details JSONB,
       created_at TIMESTAMP DEFAULT NOW()
     )
   `);
+
+  await pool.query("ALTER TABLE posts ADD COLUMN IF NOT EXISTS hook TEXT");
+  await pool.query("ALTER TABLE logs ADD COLUMN IF NOT EXISTS message TEXT");
 
   await pool.query("CREATE INDEX IF NOT EXISTS idx_posts_created_at ON posts(created_at DESC)");
   await pool.query("CREATE INDEX IF NOT EXISTS idx_posts_status ON posts(status)");
@@ -65,14 +70,16 @@ async function initDatabase() {
 
 async function savePost(post) {
   const client = requirePool();
+  const normalizedHooks = Array.isArray(post.hooks) ? post.hooks : [];
+  const primaryHook = String(post.hook || normalizedHooks[0] || "").trim();
 
   const result = await client.query(
     `
-      INSERT INTO posts (topic, content, hooks, cta, status)
-      VALUES ($1, $2, $3::jsonb, $4, $5)
+      INSERT INTO posts (topic, content, hook, hooks, cta, status)
+      VALUES ($1, $2, $3, $4::jsonb, $5, $6)
       RETURNING *
     `,
-    [post.topic, post.content, JSON.stringify(post.hooks || []), post.cta || "", post.status]
+    [post.topic, post.content, primaryHook, JSON.stringify(normalizedHooks), post.cta || "", post.status]
   );
 
   return result.rows[0];
@@ -95,14 +102,15 @@ async function saveMetric(metric) {
 
 async function saveLog(log) {
   const client = requirePool();
+  const message = String(log.message || log.cause || "").trim();
 
   const result = await client.query(
     `
-      INSERT INTO logs (level, type, cause, fix_applied, details)
-      VALUES ($1, $2, $3, $4, $5::jsonb)
+      INSERT INTO logs (level, type, message, cause, fix_applied, details)
+      VALUES ($1, $2, $3, $4, $5, $6::jsonb)
       RETURNING *
     `,
-    [log.level, log.type || "", log.cause || "", log.fix_applied || "", JSON.stringify(log.details || {})]
+    [log.level, log.type || "", message, log.cause || "", log.fix_applied || "", JSON.stringify(log.details || {})]
   );
 
   return result.rows[0];

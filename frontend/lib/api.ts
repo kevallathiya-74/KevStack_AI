@@ -8,16 +8,63 @@ export const api = axios.create({
 });
 
 type ApiErrorPayload = {
-  error?: string;
+  success?: boolean;
+  data?: unknown;
+  error?:
+    | string
+    | {
+        code?: string;
+        message?: string;
+      }
+    | null;
   message?: string;
 };
+
+type ApiEnvelope<T> = {
+  success: boolean;
+  data: T;
+  error: null | { code?: string; message?: string };
+};
+
+function unwrapEnvelope<T>(payload: unknown): T {
+  if (
+    payload &&
+    typeof payload === "object" &&
+    "success" in payload &&
+    typeof (payload as ApiEnvelope<T>).success === "boolean"
+  ) {
+    const envelope = payload as ApiEnvelope<T>;
+    if (envelope.success) {
+      return envelope.data;
+    }
+
+    const message = envelope.error?.message || "Request failed.";
+    throw new Error(message);
+  }
+
+  return payload as T;
+}
 
 export function getUserFriendlyError(error: unknown, fallbackMessage: string) {
   if (axios.isAxiosError(error)) {
     const status = error.response?.status;
     const payload = (error.response?.data || {}) as ApiErrorPayload;
-    const code = typeof payload.error === "string" ? payload.error : "";
-    const message = typeof payload.message === "string" ? payload.message.trim() : "";
+    const envelopeError =
+      payload.error && typeof payload.error === "object"
+        ? payload.error
+        : null;
+    const code =
+      typeof payload.error === "string"
+        ? payload.error
+        : typeof envelopeError?.code === "string"
+          ? envelopeError.code
+          : "";
+    const message =
+      typeof envelopeError?.message === "string"
+        ? envelopeError.message.trim()
+        : typeof payload.message === "string"
+          ? payload.message.trim()
+          : "";
 
     if (code === "validation_error" && message) {
       return message;
@@ -77,6 +124,7 @@ export type DashboardPost = {
   id: number;
   topic: string;
   content: string;
+  hook?: string;
   hooks: string[];
   cta: string;
   status: string;
@@ -87,37 +135,78 @@ export type DashboardLog = {
   id: number;
   level: string;
   type?: string;
+  message?: string;
   cause?: string;
   fix_applied?: string;
+  details?: Record<string, unknown>;
   created_at: string;
+};
+
+export type FeedbackLog = {
+  id: number;
+  title: string;
+  description: string;
+  status: "success" | "warning" | "error";
+  time: string;
+  action: string;
+  created_at: string;
+};
+
+export type GeneratedHookScore = {
+  hook: string;
+  score: number;
+};
+
+export type GenerateContentResponse = {
+  hook: string;
+  content: string;
+  cta: string;
+  topic: string;
+  metrics: {
+    impressions: number;
+    likes: number;
+    comments: number;
+  };
+  hooks: string[];
+  hookScores: GeneratedHookScore[];
+  post: DashboardPost;
 };
 
 export async function fetchDashboard() {
   const { data } = await api.get("/api/dashboard");
-  return data as { posts: DashboardPost[]; metrics: DashboardMetric[]; logs: DashboardLog[] };
+  return unwrapEnvelope<{ posts: DashboardPost[]; metrics: DashboardMetric[]; logs: DashboardLog[] }>(data);
 }
 
 export async function generateContent(topic: string) {
   const { data } = await api.post("/api/content/generate", { topic });
-  return data;
+  return unwrapEnvelope<GenerateContentResponse>(data);
 }
 
 export async function generateContentFromData() {
   const { data } = await api.post("/api/content/generate-from-data");
-  return data;
+  return unwrapEnvelope<
+    GenerateContentResponse & {
+      source: {
+        metricsCount: number;
+        postsCount: number;
+      };
+    }
+  >(data);
 }
 
 export async function publishPost(post: { content: string }) {
   const { data } = await api.post("/api/publish", post);
-  return data as { published: boolean; reason: string };
+  return unwrapEnvelope<{ published: boolean; reason: string; mode?: string; postsToday?: number; actionsToday?: number }>(
+    data
+  );
 }
 
 export async function fetchAnalytics() {
   const { data } = await api.get("/api/analytics");
-  return data as { metrics: DashboardMetric[] };
+  return unwrapEnvelope<{ metrics: DashboardMetric[] }>(data);
 }
 
 export async function fetchLogs() {
   const { data } = await api.get("/api/logs");
-  return data as { logs: DashboardLog[] };
+  return unwrapEnvelope<{ logs: FeedbackLog[] }>(data);
 }

@@ -61,7 +61,10 @@ async function runJsonModel(model, prompt, validator, label) {
   ];
 
   for (const currentPrompt of prompts) {
-    const generated = await runHfModel(model, currentPrompt);
+    const generated = await runHfModel(model, currentPrompt, {
+      maxRetries: 2,
+      fallbackPrompt: `${currentPrompt}\nRespond with compact valid JSON only, strictly using double-quoted keys and string values where required.`,
+    });
     const parsed = parseJsonObject(generated);
     if (validator(parsed)) {
       return parsed;
@@ -186,11 +189,15 @@ async function contentGeneratorAgent(topic, strategy, performanceContext) {
     "- Follow this order: Hook, Story, Problem, Insight, Actionable Tip, CTA.",
     "- Hook must be the first two lines and create curiosity.",
     "- Include one concrete mistake and one practical lesson.",
+    "- Target 220 to 320 words.",
     "- If metric samples exist, include exact values from the performance context.",
     "- End with 3 to 5 relevant hashtags.",
   ].join("\n");
 
-  const generated = await runHfModel(env.mistralModel, prompt);
+  const generated = await runHfModel(env.mistralModel, prompt, {
+    maxRetries: 2,
+    fallbackPrompt: `${prompt}\nIf uncertain, prioritize a realistic developer incident narrative with clear lessons and a final CTA question.`,
+  });
   if (!generated || !generated.trim()) {
     throw new Error("Mistral model returned empty content.");
   }
@@ -205,43 +212,106 @@ async function contentGeneratorAgent(topic, strategy, performanceContext) {
 
 async function hookGeneratorAgent(topic, content) {
   const prompt = [
-    "Generate exactly 3 high-retention hooks and 1 CTA for a LinkedIn post.",
+    "Generate exactly 5 high-retention hooks for a LinkedIn post.",
     `Topic: ${topic}`,
     `Content: ${content}`,
-    'Return strict JSON only in this shape: {"hooks":["hook1","hook2","hook3"],"cta":"one line CTA question"}.',
+    'Return strict JSON only in this shape: {"hooks":["hook1","hook2","hook3","hook4","hook5"]}.',
     "Hooks should be concise, specific, and practical for engineers.",
   ].join("\n");
 
   const parsed = await runJsonModel(
     env.flanModel,
     prompt,
-    (value) => Boolean(value) && Array.isArray(value.hooks) && typeof value.cta === "string",
+    (value) => Boolean(value) && Array.isArray(value.hooks),
     "Hook"
   );
 
-  const hooks = parsed.hooks.map((hook) => toSingleLine(hook)).filter(Boolean).slice(0, 3);
-  const cta = toSingleLine(parsed.cta);
+  const hooks = parsed.hooks.map((hook) => toSingleLine(hook)).filter(Boolean).slice(0, 5);
 
-  if (hooks.length < 3 || !cta) {
+  if (hooks.length < 5) {
     throw new Error("Hook model output is incomplete.");
   }
 
-  return { hooks, cta };
+  return { hooks };
 }
 
-async function engagementAgent(topic, content, hooks) {
-  const primaryHook = hooks[0] || "";
+function scoreHooks(hooks, topic) {
+  const topicKeywords = String(topic || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .map((value) => value.trim())
+    .filter((value) => value.length >= 4);
+
+  const specificityPattern =
+    /react|next|typescript|javascript|node|api|backend|frontend|database|postgres|sql|docker|kubernetes|devops|ci\/cd|aws|gcp|azure|latency|incident|deploy/i;
+
+  return (Array.isArray(hooks) ? hooks : [])
+    .map((hook) => {
+      const normalizedHook = toSingleLine(hook);
+      const lowerHook = normalizedHook.toLowerCase();
+      const hasPain = /mistake|pain|issue|fail|bug|incident|outage|crash|broken|error/.test(lowerHook);
+      const hasCuriosity = /\?|vs\.|versus|instead of|why|how/.test(lowerHook);
+      const isShort = normalizedHook.length > 0 && normalizedHook.length < 120;
+      const hasSpecificity =
+        specificityPattern.test(normalizedHook) || topicKeywords.some((keyword) => lowerHook.includes(keyword));
+
+      const score = (hasPain ? 2 : 0) + (hasCuriosity ? 1 : 0) + (isShort ? 1 : 0) + (hasSpecificity ? 1 : 0);
+      return {
+        hook: normalizedHook,
+        score,
+      };
+    })
+    .filter((item) => item.hook)
+    .sort((a, b) => b.score - a.score);
+}
+
+function selectBestHook(scoredHooks) {
+  return Array.isArray(scoredHooks) && scoredHooks.length ? scoredHooks[0].hook : "";
+}
+
+async function ctaGeneratorAgent(topic, content, selectedHook) {
+  const prompt = [
+    "Generate one concise CTA question for this LinkedIn post.",
+    `Topic: ${topic}`,
+    `Primary hook: ${selectedHook}`,
+    `Content: ${content}`,
+    'Return strict JSON only in this shape: {"cta":"one line CTA question"}.',
+    "CTA must be practical and end with a question mark.",
+  ].join("\n");
+
+  const parsed = await runJsonModel(
+    env.flanModel,
+    prompt,
+    (value) => Boolean(value) && typeof value.cta === "string" && Boolean(value.cta.trim()),
+    "CTA"
+  );
+
+  let cta = toSingleLine(parsed.cta);
+  cta = cta.replace(/\?{2,}$/g, "?").trim();
+  if (!cta.endsWith("?")) {
+    cta = `${cta.replace(/[.!]+$/, "").trim()}?`;
+  }
+
+  return cta;
+}
+
+async function engagementAgent(topic, content, primaryHook, cta) {
   const prompt = [
     "Refine this LinkedIn post for stronger engagement while preserving factual details.",
     `Topic: ${topic}`,
     `Primary hook: ${primaryHook}`,
+    `CTA question: ${cta}`,
     `Draft content: ${content}`,
     "Return plain text only.",
     "Keep short paragraphs, one blank line between paragraphs, and keep the final CTA as a single question line.",
     "Do not invent metrics or tools not present in the draft.",
   ].join("\n");
 
-  const generated = await runHfModel(env.mistralModel, prompt);
+  const generated = await runHfModel(env.mistralModel, prompt, {
+    maxRetries: 2,
+    fallbackPrompt: `${prompt}\nIf uncertain, keep the current structure and improve clarity only.`,
+  });
   if (!generated || !generated.trim()) {
     throw new Error("Engagement optimization returned empty content.");
   }
@@ -273,6 +343,9 @@ module.exports = {
   strategyAgent,
   contentGeneratorAgent,
   hookGeneratorAgent,
+  scoreHooks,
+  selectBestHook,
+  ctaGeneratorAgent,
   engagementAgent,
   learningAgent,
 };
