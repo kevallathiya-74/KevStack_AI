@@ -155,6 +155,13 @@ export type FeedbackLog = {
 export type GeneratedHookScore = {
   hook: string;
   score: number;
+  reasons?: string[];
+};
+
+export type GrowthDecision = {
+  strategy: string;
+  reason: string;
+  recommendedTopic: string | null;
 };
 
 export type GenerateContentResponse = {
@@ -169,7 +176,18 @@ export type GenerateContentResponse = {
   };
   hooks: string[];
   hookScores: GeneratedHookScore[];
+  growthDecision?: GrowthDecision | null;
   post: DashboardPost;
+};
+
+export type AppSettings = {
+  safeMode: boolean;
+  publishEnabled: boolean;
+  maxPostsPerDay: number;
+  maxActionsPerDay: number;
+  defaultSchedulerTopic: string;
+  huggingFaceConfigured: boolean;
+  hasLinkedInCredentials: boolean;
 };
 
 export async function fetchDashboard() {
@@ -209,4 +227,9 @@ export async function fetchAnalytics() {
 export async function fetchLogs() {
   const { data } = await api.get("/api/logs");
   return unwrapEnvelope<{ logs: FeedbackLog[] }>(data);
+}
+
+export async function fetchSettings() {
+  const { data } = await api.get("/api/settings");
+  return unwrapEnvelope<AppSettings>(data);
 }

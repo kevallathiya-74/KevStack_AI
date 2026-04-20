@@ -237,6 +237,34 @@ body {
   color: #1e293b;
 }
 
+.hook-item {
+  margin-bottom: 10px;
+}
+
+.hook-item:last-child {
+  margin-bottom: 0;
+}
+
+.hook-item__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.hook-item__score {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.hook-item__reasons {
+  display: inline-block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .cta,
 .status {
   margin-top: 10px;

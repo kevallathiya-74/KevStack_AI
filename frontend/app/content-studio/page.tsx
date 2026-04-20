@@ -17,6 +17,9 @@ export default function ContentStudioPage() {
   const [loading, setLoading] = useState(false);
   const [publishing, setPublishing] = useState(false);
 
+  const displayedHookScores =
+    hookScores.length > 0 ? hookScores : hooks.map((hook) => ({ hook, score: 0, reasons: [] as string[] }));
+
   async function handleGenerate() {
     const normalizedTopic = topic.trim();
     if (!normalizedTopic) {
@@ -128,10 +131,15 @@ export default function ContentStudioPage() {
 
       <Card title="Hooks & CTA">
         <ul className="list">
-          {(hookScores.length ? hookScores : hooks.map((hook) => ({ hook, score: 0 }))).map((item) => (
-            <li key={item.hook}>
-              {item.hook}
-              {hookScores.length > 0 ? ` (score: ${item.score})` : ""}
+          {displayedHookScores.map((item, index) => (
+            <li key={item.hook} className="hook-item">
+              <div className="hook-item__head">
+                <span>{index === 0 ? `⭐ ${item.hook}` : item.hook}</span>
+                <span className="hook-item__score">score: {item.score}</span>
+              </div>
+              {item.reasons && item.reasons.length > 0 && (
+                <small className="hook-item__reasons">why: {item.reasons.join(", ")}</small>
+              )}
             </li>
           ))}
           {!hooks.length && <li>No hooks generated yet.</li>}

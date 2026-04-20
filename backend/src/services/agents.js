@@ -256,10 +256,17 @@ function scoreHooks(hooks, topic) {
       const hasSpecificity =
         specificityPattern.test(normalizedHook) || topicKeywords.some((keyword) => lowerHook.includes(keyword));
 
+      const reasons = [];
+      if (hasPain) reasons.push("pain_or_mistake");
+      if (hasCuriosity) reasons.push("curiosity");
+      if (isShort) reasons.push("short_format");
+      if (hasSpecificity) reasons.push("specific_context");
+
       const score = (hasPain ? 2 : 0) + (hasCuriosity ? 1 : 0) + (isShort ? 1 : 0) + (hasSpecificity ? 1 : 0);
       return {
         hook: normalizedHook,
         score,
+        reasons,
       };
     })
     .filter((item) => item.hook)

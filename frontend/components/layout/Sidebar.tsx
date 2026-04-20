@@ -8,6 +8,7 @@ const items = [
   { href: "/content-studio", label: "Content Studio" },
   { href: "/analytics", label: "Analytics" },
   { href: "/automation-control", label: "Automation Control" },
+  { href: "/settings", label: "Settings" },
   { href: "/logs", label: "Logs" },
 ];
 

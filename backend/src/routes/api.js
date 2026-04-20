@@ -135,6 +135,7 @@ function toGenerationPayload(result) {
     analysis: result?.analysis || null,
     strategy: result?.strategy || null,
     learning: result?.learning || null,
+    growthDecision: result?.growthDecision || null,
     performanceContext: result?.performanceContext || null,
     post: result?.post || null,
     flow: result?.flow || [],
@@ -164,6 +165,18 @@ function createApiRouter() {
     } catch (error) {
       next(error);
     }
+  });
+
+  router.get("/settings", (_req, res) => {
+    sendSuccess(res, {
+      safeMode: env.linkedInSafeMode,
+      publishEnabled: env.linkedInPublishEnabled,
+      maxPostsPerDay: env.linkedInMaxPostsPerDay,
+      maxActionsPerDay: env.linkedInMaxActionsPerDay,
+      defaultSchedulerTopic: env.defaultSchedulerTopic,
+      huggingFaceConfigured: Boolean(env.huggingFaceApiToken),
+      hasLinkedInCredentials: Boolean(env.linkedInEmail && env.linkedInPassword),
+    });
   });
 
   router.post("/metrics", async (req, res, next) => {

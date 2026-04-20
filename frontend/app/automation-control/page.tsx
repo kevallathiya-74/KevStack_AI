@@ -8,6 +8,7 @@ import { generateContent, getUserFriendlyError, publishPost } from "@/lib/api";
 export default function AutomationControlPage() {
   const [topic, setTopic] = useState("");
   const [status, setStatus] = useState("Idle");
+  const [strategyHint, setStrategyHint] = useState("");
   const [statusTone, setStatusTone] = useState<"neutral" | "success" | "error">("neutral");
 
   async function runGenerate() {
@@ -20,11 +21,15 @@ export default function AutomationControlPage() {
 
     setStatus("Step 1/4: validating topic...");
     setStatusTone("neutral");
+    setStrategyHint("");
     try {
       setStatus("Step 2/4: analyzing historical performance...");
       const generationPromise = generateContent(normalizedTopic);
       setStatus("Step 3/4: generating content, hooks, and CTA...");
-      await generationPromise;
+      const result = await generationPromise;
+      if (result.growthDecision?.strategy) {
+        setStrategyHint(`Strategy: ${result.growthDecision.strategy} — ${result.growthDecision.reason}`);
+      }
       setStatus("Step 4/4: generated successfully.");
       setStatusTone("success");
     } catch (error) {
@@ -74,6 +79,7 @@ export default function AutomationControlPage() {
           </Button>
         </div>
         <p className={`status status--${statusTone}`}>{status}</p>
+        {strategyHint && <p className="muted">{strategyHint}</p>}
       </Card>
     </div>
   );
