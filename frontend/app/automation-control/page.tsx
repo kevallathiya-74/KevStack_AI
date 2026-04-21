@@ -1,27 +1,61 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
-import { generateContent, getUserFriendlyError, publishPost } from "@/lib/api";
+import EmptyState from "@/components/ui/EmptyState";
+import { ErrorState } from "@/components/ui/ErrorState";
+import SkeletonCard from "@/components/ui/SkeletonCard";
+import { useToast } from "@/components/ui/ToastProvider";
+import { fetchSettings, generateContent, getUserFriendlyError, publishPost, type AppSettings } from "@/lib/api";
 
 export default function AutomationControlPage() {
+  const { success: toastSuccess, error: toastError, info: toastInfo } = useToast();
   const [topic, setTopic] = useState("");
-  const [status, setStatus] = useState("Idle");
+  const [status, setStatus] = useState("Idle. Enter a topic to start.");
   const [strategyHint, setStrategyHint] = useState("");
   const [statusTone, setStatusTone] = useState<"neutral" | "success" | "error">("neutral");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [generating, setGenerating] = useState(false);
+  const [publishing, setPublishing] = useState(false);
+
+  const loadAutomationContext = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+
+    try {
+      const response = await fetchSettings();
+      setSettings(response);
+    } catch (requestError) {
+      setSettings(null);
+      const message = getUserFriendlyError(requestError, "Unable to load automation controls right now.");
+      setError(message);
+      toastError(message);
+    } finally {
+      setLoading(false);
+    }
+  }, [toastError]);
+
+  useEffect(() => {
+    void loadAutomationContext();
+  }, [loadAutomationContext]);
 
   async function runGenerate() {
     const normalizedTopic = topic.trim();
     if (!normalizedTopic) {
-      setStatus("Enter a topic first.");
+      const message = "Enter a topic first.";
+      setStatus(message);
       setStatusTone("error");
+      toastError(message);
       return;
     }
 
     setStatus("Step 1/4: validating topic...");
     setStatusTone("neutral");
     setStrategyHint("");
+    setGenerating(true);
     try {
       setStatus("Step 2/4: analyzing historical performance...");
       const generationPromise = generateContent(normalizedTopic);
@@ -30,38 +64,95 @@ export default function AutomationControlPage() {
       if (result.growthDecision?.strategy) {
         setStrategyHint(`Strategy: ${result.growthDecision.strategy} — ${result.growthDecision.reason}`);
       }
-      setStatus("Step 4/4: generated successfully.");
+      const message = "Step 4/4: generated successfully.";
+      setStatus(message);
       setStatusTone("success");
+      toastSuccess("Automation generation completed successfully.");
     } catch (error) {
-      setStatus(getUserFriendlyError(error, "Generation failed. Please try again."));
+      const message = getUserFriendlyError(error, "Generation failed. Please try again.");
+      setStatus(message);
       setStatusTone("error");
+      toastError(message);
+    } finally {
+      setGenerating(false);
     }
   }
 
   async function runPublish() {
     const payload = topic.trim();
     if (!payload) {
-      setStatus("Enter publish content first.");
+      const message = "Enter publish content first.";
+      setStatus(message);
       setStatusTone("error");
+      toastError(message);
       return;
     }
 
     setStatus("Running safe publish...");
     setStatusTone("neutral");
+    setPublishing(true);
     try {
       const result = await publishPost({ content: payload });
       const mode = result.mode ? ` [mode: ${result.mode}]` : "";
-      setStatus(`${result.reason}${mode}`);
+      const message = `${result.reason}${mode}`;
+      setStatus(message);
       setStatusTone(result.published ? "success" : "neutral");
+      if (result.published) {
+        toastSuccess(message);
+      } else {
+        toastInfo(message);
+      }
     } catch (error) {
-      setStatus(getUserFriendlyError(error, "Publish failed. Please try again."));
+      const message = getUserFriendlyError(error, "Publish failed. Please try again.");
+      setStatus(message);
       setStatusTone("error");
+      toastError(message);
+    } finally {
+      setPublishing(false);
     }
+  }
+
+  if (loading) {
+    return (
+      <div className="stack">
+        <Card title="Automation Control" subtitle="Daily-safe automation with manual override">
+          <SkeletonCard lines={5} />
+        </Card>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="stack">
+        <ErrorState message={error} onRetry={() => void loadAutomationContext()} />
+      </div>
+    );
+  }
+
+  if (!settings) {
+    return (
+      <div className="stack">
+        <EmptyState title="Automation context unavailable" message="Try refreshing to load publishing safety controls." />
+      </div>
+    );
   }
 
   return (
     <div className="stack">
       <Card title="Automation Control" subtitle="Daily-safe automation with manual override">
+        <p className="muted">
+          Safe mode: {settings.safeMode ? "Enabled" : "Disabled"} | Publish enabled: {settings.publishEnabled ? "Yes" : "No"} |
+          Max posts/day: {settings.maxPostsPerDay} | Max actions/day: {settings.maxActionsPerDay}
+        </p>
+
+        {!topic.trim() && (
+          <EmptyState
+            title="No automation task queued"
+            message="Enter a topic to run generation or provide publish content to run the safe publish command."
+          />
+        )}
+
         <div className="inline-form">
           <input
             className="input"
@@ -71,11 +162,11 @@ export default function AutomationControlPage() {
           />
         </div>
         <div className="actions">
-          <Button onClick={runGenerate} disabled={!topic.trim()}>
-            Run Generate
+          <Button onClick={runGenerate} disabled={!topic.trim() || generating || publishing}>
+            {generating ? "Running Generate..." : "Run Generate"}
           </Button>
-          <Button onClick={runPublish} disabled={!topic.trim()}>
-            Run Safe Publish
+          <Button onClick={runPublish} disabled={!topic.trim() || generating || publishing}>
+            {publishing ? "Running Publish..." : "Run Safe Publish"}
           </Button>
         </div>
         <p className={`status status--${statusTone}`}>{status}</p>

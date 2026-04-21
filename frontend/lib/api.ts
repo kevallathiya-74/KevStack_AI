@@ -190,6 +190,14 @@ export type AppSettings = {
   hasLinkedInCredentials: boolean;
 };
 
+export type SubmitMetricInput = {
+  post_id: number;
+  impressions: number;
+  likes: number;
+  comments: number;
+  shares: number;
+};
+
 export async function fetchDashboard() {
   const { data } = await api.get("/api/dashboard");
   return unwrapEnvelope<{ posts: DashboardPost[]; metrics: DashboardMetric[]; logs: DashboardLog[] }>(data);
@@ -232,4 +240,9 @@ export async function fetchLogs() {
 export async function fetchSettings() {
   const { data } = await api.get("/api/settings");
   return unwrapEnvelope<AppSettings>(data);
+}
+
+export async function submitMetric(payload: SubmitMetricInput) {
+  const { data } = await api.post("/api/metrics", payload);
+  return unwrapEnvelope<{ metric: DashboardMetric }>(data);
 }

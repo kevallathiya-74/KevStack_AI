@@ -1,9 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Card } from "@/components/ui/Card";
 import { EngagementChart } from "@/components/charts/EngagementChart";
 import { MetricCard } from "@/components/ui/MetricCard";
+import EmptyState from "@/components/ui/EmptyState";
+import { ErrorState } from "@/components/ui/ErrorState";
+import SkeletonCard from "@/components/ui/SkeletonCard";
+import { useToast } from "@/components/ui/ToastProvider";
 import { DashboardMetric, fetchAnalytics, getUserFriendlyError } from "@/lib/api";
 
 const RANGE_OPTIONS = [
@@ -15,23 +19,32 @@ const RANGE_OPTIONS = [
 const numberFormatter = new Intl.NumberFormat();
 
 export default function AnalyticsPage() {
+  const { error: toastError } = useToast();
   const [metrics, setMetrics] = useState<DashboardMetric[]>([]);
   const [rangeDays, setRangeDays] = useState<(typeof RANGE_OPTIONS)[number]["value"]>(30);
-  const [status, setStatus] = useState("Loading analytics...");
-  const [statusTone, setStatusTone] = useState<"neutral" | "error">("neutral");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadAnalytics = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+
+    try {
+      const data = await fetchAnalytics();
+      setMetrics(data.metrics || []);
+    } catch (requestError) {
+      setMetrics([]);
+      const message = getUserFriendlyError(requestError, "Unable to load analytics right now.");
+      setError(message);
+      toastError(message);
+    } finally {
+      setLoading(false);
+    }
+  }, [toastError]);
 
   useEffect(() => {
-    fetchAnalytics()
-      .then((data) => {
-        setMetrics(data.metrics || []);
-        setStatus("");
-      })
-      .catch((error) => {
-        setMetrics([]);
-        setStatus(getUserFriendlyError(error, "Unable to load analytics right now."));
-        setStatusTone("error");
-      });
-  }, []);
+    void loadAnalytics();
+  }, [loadAnalytics]);
 
   const visibleMetrics = useMemo(() => {
     if (!metrics.length) {
@@ -76,10 +89,50 @@ export default function AnalyticsPage() {
       .slice(0, 8);
   }, [visibleMetrics]);
 
+  if (loading) {
+    return (
+      <div className="stack">
+        <Card title="Analytics Overview" subtitle="Choose a range and inspect trend quality with interaction context">
+          <div className="metrics-grid">
+            <MetricCard label="Total Impressions" value="-" loading />
+            <MetricCard label="Total Interactions" value="-" loading />
+            <MetricCard label="Average Impressions/Post" value="-" loading />
+            <MetricCard label="Engagement Rate" value="-" loading />
+          </div>
+        </Card>
+
+        <Card title="Analytics" subtitle="Content performance over time">
+          <EngagementChart metrics={[]} loading />
+        </Card>
+
+        <Card title="Recent Metric Samples" subtitle="Latest entries used to build this chart">
+          <SkeletonCard lines={5} />
+        </Card>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="stack">
+        <ErrorState message={error} onRetry={() => void loadAnalytics()} />
+      </div>
+    );
+  }
+
+  if (!metrics.length) {
+    return (
+      <div className="stack">
+        <EmptyState
+          title="No performance data yet"
+          message="Submit engagement metrics from Dashboard to unlock trend analysis and range-based insights."
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="stack">
-      {status && <p className={`status status--${statusTone}`}>{status}</p>}
-
       <Card title="Analytics Overview" subtitle="Choose a range and inspect trend quality with interaction context">
         <div className="toolbar">
           <div className="segmented" role="tablist" aria-label="Analytics time range">
@@ -106,34 +159,44 @@ export default function AnalyticsPage() {
       </Card>
 
       <Card title="Analytics" subtitle="Content performance over time">
-        <EngagementChart metrics={visibleMetrics} />
+        {visibleMetrics.length === 0 ? (
+          <EmptyState
+            title="No samples for this range"
+            message="Try a wider range to include more entries and regenerate the trend chart."
+          />
+        ) : (
+          <EngagementChart metrics={visibleMetrics} />
+        )}
       </Card>
 
       <Card title="Recent Metric Samples" subtitle="Latest entries used to build this chart">
-        <div className="table table--5">
-          <div className="table__head">
-            <span>Captured</span>
-            <span>Impressions</span>
-            <span>Likes</span>
-            <span>Comments</span>
-            <span>Engagement</span>
-          </div>
-          {recentRows.length === 0 && <div className="table__empty">No metric samples available for this range.</div>}
-          {recentRows.map((metric) => {
-            const interactions = (metric.likes || 0) + (metric.comments || 0) + (metric.shares || 0);
-            const rate = metric.impressions ? (interactions / metric.impressions) * 100 : 0;
+        {recentRows.length === 0 ? (
+          <EmptyState title="No rows for this range" message="Adjust the range to reveal recent metric samples." />
+        ) : (
+          <div className="table table--5">
+            <div className="table__head">
+              <span>Captured</span>
+              <span>Impressions</span>
+              <span>Likes</span>
+              <span>Comments</span>
+              <span>Engagement</span>
+            </div>
+            {recentRows.map((metric) => {
+              const interactions = (metric.likes || 0) + (metric.comments || 0) + (metric.shares || 0);
+              const rate = metric.impressions ? (interactions / metric.impressions) * 100 : 0;
 
-            return (
-              <div className="table__row" key={metric.id}>
-                <span>{new Date(metric.created_at).toLocaleString()}</span>
-                <span>{numberFormatter.format(metric.impressions || 0)}</span>
-                <span>{numberFormatter.format(metric.likes || 0)}</span>
-                <span>{numberFormatter.format(metric.comments || 0)}</span>
-                <span>{rate.toFixed(2)}%</span>
-              </div>
-            );
-          })}
-        </div>
+              return (
+                <div className="table__row" key={metric.id}>
+                  <span>{new Date(metric.created_at).toLocaleString()}</span>
+                  <span>{numberFormatter.format(metric.impressions || 0)}</span>
+                  <span>{numberFormatter.format(metric.likes || 0)}</span>
+                  <span>{numberFormatter.format(metric.comments || 0)}</span>
+                  <span>{rate.toFixed(2)}%</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </Card>
     </div>
   );

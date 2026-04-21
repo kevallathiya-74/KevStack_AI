@@ -1,8 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Card } from "@/components/ui/Card";
 import { MetricCard } from "@/components/ui/MetricCard";
+import EmptyState from "@/components/ui/EmptyState";
+import { ErrorState } from "@/components/ui/ErrorState";
+import SkeletonCard from "@/components/ui/SkeletonCard";
+import { useToast } from "@/components/ui/ToastProvider";
 import { FeedbackLog, fetchLogs, getUserFriendlyError } from "@/lib/api";
 
 const numberFormatter = new Intl.NumberFormat();
@@ -44,30 +48,39 @@ function groupSimilarLogs(logs: FeedbackLog[]) {
 }
 
 export default function LogsPage() {
+  const { error: toastError } = useToast();
   const [logs, setLogs] = useState<FeedbackLog[]>([]);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | FeedbackLog["status"]>("all");
-  const [status, setStatus] = useState("Loading logs...");
-  const [statusTone, setStatusTone] = useState<"neutral" | "error">("neutral");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadLogs = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+
+    try {
+      const data = await fetchLogs();
+      const cutoff = Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000;
+      const recentLogs = (data.logs || []).filter((log) => {
+        const timestamp = new Date(log.created_at).getTime();
+        return Number.isFinite(timestamp) && timestamp >= cutoff;
+      });
+
+      setLogs(recentLogs);
+    } catch (requestError) {
+      setLogs([]);
+      const message = getUserFriendlyError(requestError, "Unable to load feedback updates right now.");
+      setError(message);
+      toastError(message);
+    } finally {
+      setLoading(false);
+    }
+  }, [toastError]);
 
   useEffect(() => {
-    fetchLogs()
-      .then((data) => {
-        const cutoff = Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000;
-        const recentLogs = (data.logs || []).filter((log) => {
-          const timestamp = new Date(log.created_at).getTime();
-          return Number.isFinite(timestamp) && timestamp >= cutoff;
-        });
-
-        setLogs(recentLogs);
-        setStatus(recentLogs.length ? "" : "No recent product feedback updates yet.");
-      })
-      .catch((error) => {
-        setLogs([]);
-        setStatus(getUserFriendlyError(error, "Unable to load feedback updates right now."));
-        setStatusTone("error");
-      });
-  }, []);
+    void loadLogs();
+  }, [loadLogs]);
 
   const normalizedQuery = query.trim().toLowerCase();
 
@@ -110,10 +123,46 @@ export default function LogsPage() {
     };
   }, [logs]);
 
+  if (loading) {
+    return (
+      <div className="stack">
+        <Card title="Feedback Insights" subtitle="Human-readable product updates from background automation">
+          <div className="metrics-grid">
+            <MetricCard label="Total Updates" value="-" loading />
+            <MetricCard label="Success" value="-" loading />
+            <MetricCard label="Warnings" value="-" loading />
+            <MetricCard label="Errors" value="-" loading />
+          </div>
+        </Card>
+
+        <Card title="System Feedback" subtitle="Only meaningful progress, issues, retries, and improvements">
+          <SkeletonCard lines={6} />
+        </Card>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="stack">
+        <ErrorState message={error} onRetry={() => void loadLogs()} />
+      </div>
+    );
+  }
+
+  if (!logs.length) {
+    return (
+      <div className="stack">
+        <EmptyState
+          title="No activity yet"
+          message="Automation feedback logs will appear here after content generation, publishing, or retries run."
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="stack">
-      {status && <p className={`status status--${statusTone}`}>{status}</p>}
-
       <Card title="Feedback Insights" subtitle="Human-readable product updates from background automation">
         <div className="metrics-grid">
           <MetricCard label="Total Updates" value={numberFormatter.format(summary.total)} />
@@ -149,7 +198,9 @@ export default function LogsPage() {
 
       <Card title="System Feedback" subtitle="Only meaningful progress, issues, retries, and improvements">
         <div className="feedback-list">
-          {groupedLogs.length === 0 && <div className="table__empty">No feedback updates match your filter.</div>}
+          {groupedLogs.length === 0 && (
+            <EmptyState title="No feedback updates match your filter" message="Try another status or clear the search query." />
+          )}
           {groupedLogs.map((log) => (
             <article className={`feedback-card feedback-card--${log.status}`} key={`${log.id}-${log.created_at}-${log.title}`}>
               <header className="feedback-card__header">

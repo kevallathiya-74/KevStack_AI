@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
@@ -17,7 +18,16 @@ export function Sidebar() {
 
   return (
     <aside className="sidebar">
-      <div className="sidebar__brand">KevStack AI</div>
+      <Link href="/" className="sidebar__brand" aria-label="KevStack AI Home">
+        <Image
+          src="/kevstack-logo.png"
+          width={186}
+          height={40}
+          alt="KevStack AI"
+          className="sidebar__brand-image"
+          priority
+        />
+      </Link>
       <nav className="sidebar__nav">
         {items.map((item) => {
           const active = pathname === item.href;

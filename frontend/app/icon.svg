@@ -1,0 +1,24 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="52" y1="52" x2="460" y2="460" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0F172A"/>
+      <stop offset="100%" stop-color="#020617"/>
+    </linearGradient>
+    <linearGradient id="kgrad" x1="96" y1="96" x2="362" y2="340" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#3B82F6"/>
+      <stop offset="100%" stop-color="#06B6D4"/>
+    </linearGradient>
+    <linearGradient id="stack" x1="108" y1="304" x2="260" y2="390" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#1D4ED8"/>
+      <stop offset="100%" stop-color="#2563EB"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="52" y="52" width="408" height="408" rx="96" fill="url(#bg)"/>
+
+  <path d="M114 154C114 142.954 122.954 134 134 134H172V336H134C122.954 336 114 327.046 114 316V154Z" fill="url(#kgrad)"/>
+  <path d="M172 236L294 134H366L238 236L366 336H294L172 236Z" fill="url(#kgrad)"/>
+
+  <path d="M112 312L208 364H274L178 312H112Z" fill="url(#stack)"/>
+  <path d="M112 342L194 388H258L176 342H112Z" fill="url(#stack)"/>
+</svg>

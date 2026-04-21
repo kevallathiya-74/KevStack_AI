@@ -5,6 +5,8 @@ import { DashboardMetric } from "@/lib/api";
 
 type Props = {
   metrics: DashboardMetric[];
+  loading?: boolean;
+  emptyMessage?: string;
 };
 
 const numberFormatter = new Intl.NumberFormat();
@@ -13,7 +15,15 @@ function formatMetricLabel(name: string) {
   return name.charAt(0).toUpperCase() + name.slice(1);
 }
 
-export function EngagementChart({ metrics }: Props) {
+export function EngagementChart({ metrics, loading = false, emptyMessage }: Props) {
+  if (loading) {
+    return (
+      <div className="chart-wrap" aria-hidden="true">
+        <div className="chart-skeleton" />
+      </div>
+    );
+  }
+
   const chartData = [...metrics]
     .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
     .map((item) => ({
@@ -32,7 +42,9 @@ export function EngagementChart({ metrics }: Props) {
   if (!chartData.length) {
     return (
       <div className="chart-wrap">
-        <div className="table__empty">No real metrics yet. Add live metrics to display the engagement trend graph.</div>
+        <div className="table__empty">
+          {emptyMessage || "No real metrics yet. Add live metrics to display the engagement trend graph."}
+        </div>
       </div>
     );
   }

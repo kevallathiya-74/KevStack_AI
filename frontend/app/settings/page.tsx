@@ -1,7 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Card } from "@/components/ui/Card";
+import EmptyState from "@/components/ui/EmptyState";
+import { ErrorState } from "@/components/ui/ErrorState";
+import SkeletonCard from "@/components/ui/SkeletonCard";
+import { useToast } from "@/components/ui/ToastProvider";
 import { fetchSettings, getUserFriendlyError, type AppSettings } from "@/lib/api";
 
 function boolLabel(value: boolean): string {
@@ -9,34 +13,31 @@ function boolLabel(value: boolean): string {
 }
 
 export default function SettingsPage() {
+  const { error: toastError } = useToast();
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    let mounted = true;
+  const loadSettings = useCallback(async () => {
+    setLoading(true);
+    setError(null);
 
-    async function load() {
-      setLoading(true);
-      setError(null);
-
-      try {
-        const response = await fetchSettings();
-        if (!mounted) return;
-        setSettings(response);
-      } catch (err: unknown) {
-        if (!mounted) return;
-        setError(getUserFriendlyError(err, "Unable to load settings."));
-      } finally {
-        if (mounted) setLoading(false);
-      }
+    try {
+      const response = await fetchSettings();
+      setSettings(response);
+    } catch (requestError: unknown) {
+      setSettings(null);
+      const message = getUserFriendlyError(requestError, "Unable to load settings.");
+      setError(message);
+      toastError(message);
+    } finally {
+      setLoading(false);
     }
+  }, [toastError]);
 
-    load();
-    return () => {
-      mounted = false;
-    };
-  }, []);
+  useEffect(() => {
+    void loadSettings();
+  }, [loadSettings]);
 
   const safetyStatus = useMemo(() => {
     if (!settings) return "Unknown";
@@ -50,9 +51,20 @@ export default function SettingsPage() {
         <h1>Settings</h1>
       </div>
 
-      {loading && <Card>Loading settings...</Card>}
+      {loading && (
+        <section className="metrics-grid">
+          <SkeletonCard lines={3} />
+          <SkeletonCard lines={3} />
+          <SkeletonCard lines={2} />
+          <SkeletonCard lines={3} />
+        </section>
+      )}
 
-      {!loading && error && <Card>{error}</Card>}
+      {!loading && error && <ErrorState message={error} onRetry={() => void loadSettings()} />}
+
+      {!loading && !error && !settings && (
+        <EmptyState title="No settings available" message="Settings data is temporarily unavailable. Try again shortly." />
+      )}
 
       {!loading && !error && settings && (
         <>
