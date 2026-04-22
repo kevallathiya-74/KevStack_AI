@@ -123,9 +123,87 @@ async function getRecentPosts(limit = 10) {
   return result.rows;
 }
 
+async function getPostsByStatus(status, limit = 20) {
+  const client = requirePool();
+
+  const normalizedStatus = String(status || "").trim().toLowerCase();
+  if (!normalizedStatus) {
+    return [];
+  }
+
+  const result = await client.query(
+    "SELECT * FROM posts WHERE LOWER(status) = $1 ORDER BY created_at DESC LIMIT $2",
+    [normalizedStatus, limit]
+  );
+  return result.rows;
+}
+
 async function getPostById(id) {
   const client = requirePool();
   const result = await client.query("SELECT * FROM posts WHERE id = $1 LIMIT 1", [id]);
+  return result.rows[0] || null;
+}
+
+async function updatePostForApproval(input) {
+  const client = requirePool();
+  const result = await client.query(
+    `
+      UPDATE posts
+      SET
+        content = COALESCE($2, content),
+        hook = COALESCE($3, hook),
+        cta = COALESCE($4, cta),
+        status = $5
+      WHERE id = $1
+      RETURNING *
+    `,
+    [
+      input.id,
+      typeof input.content === "string" ? input.content : null,
+      typeof input.hook === "string" ? input.hook : null,
+      typeof input.cta === "string" ? input.cta : null,
+      input.status,
+    ]
+  );
+
+  return result.rows[0] || null;
+}
+
+async function countPublishedPostsSince(sinceIsoDate) {
+  const client = requirePool();
+  const result = await client.query(
+    `
+      SELECT COUNT(*)::int AS count
+      FROM posts
+      WHERE LOWER(status) = 'published' AND created_at >= $1
+    `,
+    [sinceIsoDate]
+  );
+
+  return Number(result.rows[0]?.count || 0);
+}
+
+async function findPublishedDuplicateContent(content, withinHours = 72) {
+  const client = requirePool();
+  const normalizedContent = String(content || "").trim().toLowerCase();
+  if (!normalizedContent) {
+    return null;
+  }
+
+  const hours = Number.isInteger(withinHours) ? Math.max(1, withinHours) : 72;
+  const result = await client.query(
+    `
+      SELECT id, created_at
+      FROM posts
+      WHERE LOWER(status) = 'published'
+        AND LOWER(TRIM(content)) = $1
+        AND created_at >= NOW() - (($2::text || ' hours')::interval)
+      ORDER BY created_at DESC
+      LIMIT 1
+    `,
+    [normalizedContent, hours]
+  );
+
   return result.rows[0] || null;
 }
 
@@ -149,7 +227,11 @@ module.exports = {
   saveMetric,
   saveLog,
   getRecentPosts,
+  getPostsByStatus,
   getPostById,
+  updatePostForApproval,
+  countPublishedPostsSince,
+  findPublishedDuplicateContent,
   getRecentMetrics,
   getRecentLogs,
 };

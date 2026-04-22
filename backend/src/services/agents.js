@@ -179,19 +179,21 @@ async function strategyAgent(topic, analysis, performanceContext) {
 
 async function contentGeneratorAgent(topic, strategy, performanceContext) {
   const prompt = [
-    "You are writing a copy-paste-ready LinkedIn post for software engineers.",
+    "You are writing a copy-paste-ready LinkedIn caption for a broad professional audience.",
     `Topic: ${topic}`,
     `Strategy JSON: ${JSON.stringify(strategy)}`,
     `Performance context JSON: ${JSON.stringify(performanceContext)}`,
     "Output requirements:",
     "- Plain text only (no markdown headers, bullets, or code fences).",
-    "- Use short paragraphs, each 1-2 sentences, with a blank line between paragraphs.",
+    "- Make it work for any topic, including academic, career, business, or technical prompts.",
+    "- Use exactly 6 short paragraphs, each 1-2 sentences, with a blank line between paragraphs.",
     "- Follow this order: Hook, Story, Problem, Insight, Actionable Tip, CTA.",
-    "- Hook must be the first two lines and create curiosity.",
+    "- The first two lines must form a clear hook and create curiosity or emotional pull.",
     "- Include one concrete mistake and one practical lesson.",
-    "- Target 220 to 320 words.",
+    "- Target 240 to 320 words so the post reads like a complete caption.",
     "- If metric samples exist, include exact values from the performance context.",
     "- End with 3 to 5 relevant hashtags.",
+    "- Avoid sounding like the audience is only software engineers unless the topic explicitly says so.",
   ].join("\n");
 
   const generated = await runHfModel(env.mistralModel, prompt, {
@@ -294,8 +296,9 @@ async function ctaGeneratorAgent(topic, content, selectedHook) {
     "CTA"
   );
 
-  let cta = toSingleLine(parsed.cta);
-  cta = cta.replace(/\?{2,}$/g, "?").trim();
+  let cta = toSingleLine(parsed.cta)
+    .replace(/[\s?]+$/g, "")
+    .trim();
   if (!cta.endsWith("?")) {
     cta = `${cta.replace(/[.!]+$/, "").trim()}?`;
   }
@@ -311,8 +314,10 @@ async function engagementAgent(topic, content, primaryHook, cta) {
     `CTA question: ${cta}`,
     `Draft content: ${content}`,
     "Return plain text only.",
-    "Keep short paragraphs, one blank line between paragraphs, and keep the final CTA as a single question line.",
+    "Keep the six-paragraph structure, one blank line between paragraphs, and keep the final CTA as a single question line.",
+    "Do not shorten the draft below 220 words.",
     "Do not invent metrics or tools not present in the draft.",
+    "Preserve the hook/story/problem/insight/action/cta flow instead of compressing it.",
   ].join("\n");
 
   const generated = await runHfModel(env.mistralModel, prompt, {

@@ -131,6 +131,8 @@ export type DashboardPost = {
   created_at: string;
 };
 
+export type ApprovalDraft = DashboardPost;
+
 export type DashboardLog = {
   id: number;
   level: string;
@@ -225,6 +227,41 @@ export async function publishPost(post: { content: string }) {
   return unwrapEnvelope<{ published: boolean; reason: string; mode?: string; postsToday?: number; actionsToday?: number }>(
     data
   );
+}
+
+export async function generateApprovalDraft(topic: string) {
+  const { data } = await api.post("/api/approval/generate", { topic });
+  return unwrapEnvelope<{ draft: ApprovalDraft; hookScores: GeneratedHookScore[]; flow: string[] }>(data);
+}
+
+export async function fetchApprovalDrafts(
+  status: "pending_approval" | "approved" | "published" | "rejected" | "pending_manual" | "all" = "pending_approval"
+) {
+  const { data } = await api.get("/api/approval/drafts", {
+    params: { status, limit: 30 },
+  });
+  return unwrapEnvelope<{ drafts: ApprovalDraft[] }>(data);
+}
+
+export async function approveDraft(payload: {
+  postId: number;
+  approved: true;
+  content?: string;
+  hook?: string;
+  cta?: string;
+}) {
+  const { data } = await api.post("/api/approval/approve", payload);
+  return unwrapEnvelope<{ draft: ApprovalDraft }>(data);
+}
+
+export async function rejectDraft(postId: number) {
+  const { data } = await api.post("/api/approval/reject", { postId });
+  return unwrapEnvelope<{ draft: ApprovalDraft }>(data);
+}
+
+export async function publishApprovedDraft(postId: number) {
+  const { data } = await api.post("/api/approval/publish", { postId }, { timeout: 120000 });
+  return unwrapEnvelope<{ published: boolean; reason: string; mode?: string; draft?: ApprovalDraft; rawReason?: string }>(data);
 }
 
 export async function fetchAnalytics() {

@@ -1,9 +1,9 @@
 const express = require("express");
 const { runContentPipeline } = require("../services/pipeline");
-const { publishToLinkedInSafeMode } = require("../services/automation");
 const { loadEnv } = require("../config/env");
 const { getRecentMetrics, getRecentLogs, getRecentPosts, getPostById, saveMetric } = require("../services/db");
 const { transformLogsForFeedback } = require("../services/logFeedback");
+const { createPostApprovalRouter } = require("./postApproval");
 
 const env = loadEnv();
 const metricsRateLog = new Map();
@@ -144,6 +144,8 @@ function toGenerationPayload(result) {
 
 function createApiRouter() {
   const router = express.Router();
+
+  router.use("/approval", createPostApprovalRouter());
 
   router.get("/health", (_req, res) => {
     sendSuccess(res, { ok: true, module: "api" });
@@ -297,13 +299,14 @@ function createApiRouter() {
     }
   });
 
-  router.post("/publish", async (req, res, next) => {
-    try {
-      const result = await publishToLinkedInSafeMode(req.body || {});
-      sendSuccess(res, result);
-    } catch (error) {
-      next(error);
-    }
+  router.post("/publish", (_req, _res, next) => {
+    next(
+      createApiError(
+        409,
+        "approval_required",
+        "Direct publishing is disabled. Approve draft first and use /api/approval/publish."
+      )
+    );
   });
 
   return router;

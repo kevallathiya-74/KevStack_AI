@@ -86,6 +86,108 @@ function validateGeneratedPostQuality(content, hooks, cta) {
   return issues;
 }
 
+const FALLBACK_HASHTAG_STOPWORDS = new Set([
+  "about",
+  "after",
+  "again",
+  "before",
+  "being",
+  "between",
+  "books",
+  "career",
+  "from",
+  "have",
+  "into",
+  "just",
+  "lessons",
+  "learned",
+  "more",
+  "next",
+  "people",
+  "review",
+  "story",
+  "strategy",
+  "their",
+  "there",
+  "these",
+  "they",
+  "this",
+  "topic",
+  "with",
+  "your",
+]);
+
+function normalizeCaptionTopic(topic) {
+  return String(topic || "")
+    .replace(/[\u0000-\u001F\u007F]/g, " ")
+    .replace(/[{}$<>`]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function buildFallbackHashtags(topic) {
+  const topicWords = normalizeCaptionTopic(topic)
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .map((word) => word.trim())
+    .filter((word) => word.length >= 2 && !FALLBACK_HASHTAG_STOPWORDS.has(word));
+
+  const tags = [...new Set(topicWords)].slice(0, 3).map((word) => `#${word.charAt(0).toUpperCase()}${word.slice(1)}`);
+  const fallbackTags = ["#Learning", "#Growth", "#Career", "#Insight", "#Mindset"];
+
+  for (const tag of fallbackTags) {
+    if (tags.length >= 5) {
+      break;
+    }
+
+    if (!tags.includes(tag)) {
+      tags.push(tag);
+    }
+  }
+
+  return tags.slice(0, 5);
+}
+
+function buildFallbackCaption(topic, analysis, strategy, performanceContext, selectedHook, cta) {
+  const topicText = normalizeCaptionTopic(topic) || "this topic";
+  const audience = String(analysis?.audience || "professionals").trim() || "professionals";
+  const painPoint = String(analysis?.painPoint || "turning theory into something useful").trim() || "turning theory into something useful";
+  const angle = String(analysis?.angle || "making the lesson practical").trim() || "making the lesson practical";
+  const storyArc = Array.isArray(strategy?.storyArc)
+    ? strategy.storyArc.map((item) => String(item || "").trim()).filter(Boolean).slice(0, 4)
+    : [];
+
+  const hookSource = String(selectedHook || "").trim();
+  const hookLine = hookSource.length >= 25
+    ? `${hookSource.replace(/[.!?]+$/u, "")}${/[!?]$/.test(hookSource) ? "" : "?"}`
+    : `If ${topicText} has ever felt bigger than the books, where do you start?`;
+  const hookFollowUp = "The useful part appears when you turn it into something you can explain and use in a real decision.";
+  const story = `Story: when I first looked at ${topicText}, I treated it like something I would just memorize and move past. The moment it became useful was when I connected it to a real situation, because that is when the details started to make sense instead of feeling abstract.`;
+  const storyTwo = storyArc.length
+    ? `That shift usually follows a path like ${storyArc.join(" -> ")}.`
+    : "That shift usually happens in small steps: curiosity, confusion, practice, and then clarity.";
+  const problem = `Problem: most people get stuck because the subject feels too broad at first. They collect notes, repeat definitions, and still cannot explain what changes in practice for ${audience}.`;
+  const problemTwo = "Without a simple structure, even a good idea stays trapped in a summary instead of turning into something usable.";
+  const insight = `Insight: the best way to handle ${topicText} is to separate the idea, the mistake it prevents, and the result it creates. When you do that, ${painPoint} becomes easier to solve and ${angle} becomes easier to remember.`;
+  const insightTwo = Number(performanceContext?.metricSamples || 0) > 0
+    ? "If you are also looking at what performs well, keep the lesson concrete enough that it can be explained in one sentence and repeated without jargon."
+    : "Keep the explanation concrete enough that someone else can repeat it without jargon.";
+  const action = `Action: the next time you revisit ${topicText}, write one sentence on what it means, one sentence on where it breaks, and one sentence on how you would apply it in a real project, class, or conversation.`;
+  const actionTwo = "If you can teach it back in plain language, you are much closer to understanding it for real.";
+  const ctaText = `${String(cta || "").trim().replace(/[\s?]+$/u, "") || `What is the most practical lesson ${topicText} has taught you so far`}?`;
+  const hashtags = buildFallbackHashtags(topicText);
+
+  return [
+    `${hookLine}\n${hookFollowUp}`,
+    `${story} ${storyTwo}`,
+    `${problem} ${problemTwo}`,
+    `${insight} ${insightTwo}`,
+    `${action} ${actionTwo}`,
+    `${ctaText} ${hashtags.join(" ")}`,
+  ].join("\n\n");
+}
+
 function buildGrowthDecision(performanceContext, recentPosts) {
   const latestTopic = String(recentPosts?.[0]?.topic || "").trim();
   if (!latestTopic || !performanceContext?.averages || !performanceContext?.latestMetric) {
@@ -219,13 +321,31 @@ async function runContentPipeline(topic) {
     const mergedContent = await engagementAgent(topic, content, selectedHook, cta);
 
     const qualityIssues = validateGeneratedPostQuality(mergedContent, rankedHooks, cta);
+    let finalContent = mergedContent;
     if (qualityIssues.length) {
-      throw new Error(`Generated content failed quality checks: ${qualityIssues.join("; ")}`);
+      finalContent = buildFallbackCaption(topic, analysis, strategy, performanceContext, selectedHook, cta);
+      logProductEvent(
+        "IMPROVEMENT_APPLIED",
+        "Generated content did not meet the quality gate. A structured fallback caption was built automatically.",
+        "Fallback caption applied.",
+        {
+          status: "warning",
+          details: {
+            topic,
+            issues: qualityIssues,
+          },
+        }
+      );
+    }
+
+    const fallbackQualityIssues = validateGeneratedPostQuality(finalContent, rankedHooks, cta);
+    if (fallbackQualityIssues.length) {
+      throw new Error(`Generated content failed quality checks: ${fallbackQualityIssues.join("; ")}`);
     }
 
     const post = await savePost({
       topic,
-      content: mergedContent,
+      content: finalContent,
       hook: selectedHook,
       hooks: rankedHooks,
       cta,
