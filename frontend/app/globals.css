@@ -40,7 +40,7 @@ body {
 }
 
 .sidebar__brand-image {
-  width: 186px;
+  width: auto;
   height: auto;
   max-width: 100%;
   mix-blend-mode: screen;
@@ -826,9 +826,10 @@ body {
     font-size: 18px;
   }
 
-  .sidebar__brand-image {
-    width: 170px;
-  }
+.sidebar__brand-image {
+  width: 150px;
+  height: auto;
+}
 
   .toast-region--bottom-right {
     right: 10px;
