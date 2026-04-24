@@ -50,7 +50,7 @@ body {
   display: grid;
   gap: 6px;
 }
-
+ 
 .sidebar__link {
   color: #cbd5e1;
   text-decoration: none;

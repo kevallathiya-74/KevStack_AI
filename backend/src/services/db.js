@@ -4,6 +4,30 @@ const { loadEnv } = require("../config/env");
 let pool = null;
 const env = loadEnv();
 
+function normalizeDatabaseUrl(connectionString) {
+  const raw = String(connectionString || "").trim();
+  if (!raw) {
+    return raw;
+  }
+
+  try {
+    const parsed = new URL(raw);
+    const sslMode = String(parsed.searchParams.get("sslmode") || "").trim().toLowerCase();
+    const useLibpqCompat = String(parsed.searchParams.get("uselibpqcompat") || "")
+      .trim()
+      .toLowerCase();
+
+    if (["prefer", "require", "verify-ca"].includes(sslMode) && useLibpqCompat !== "true") {
+      // Keep current secure behavior and silence pg-connection-string deprecation warnings.
+      parsed.searchParams.set("sslmode", "verify-full");
+    }
+
+    return parsed.toString();
+  } catch {
+    return raw;
+  }
+}
+
 function requirePool() {
   if (!pool) {
     throw new Error("Database is not initialized. Set DATABASE_URL and restart backend.");
@@ -17,7 +41,7 @@ async function initDatabase() {
     throw new Error("DATABASE_URL is required. In-memory fallback has been removed.");
   }
 
-  pool = new Pool({ connectionString: env.databaseUrl });
+  pool = new Pool({ connectionString: normalizeDatabaseUrl(env.databaseUrl) });
   await pool.query("SELECT 1");
 
   await pool.query(`
