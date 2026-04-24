@@ -1,15 +1,16 @@
-const { chromium } = require("playwright");
-const path = require("path");
-const os = require("os");
-const fs = require("fs/promises");
 const { loadEnv } = require("../config/env");
-const { logInfo, logError, logProductEvent } = require("./logger");
+const {
+  createLinkedInContextFromSession,
+  getDefaultUserId,
+  getLinkedInConnectionStatus,
+  launchBrowser,
+} = require("./connectionService");
+const { touchLinkedInSession } = require("./db");
+const { logError, logInfo, logProductEvent } = require("./logger");
 
 const env = loadEnv();
 let postsToday = 0;
 let actionsToday = 0;
-const automationArtifactRoot = path.join(process.env.LOCALAPPDATA || os.tmpdir(), "KevStack_AI", "automation");
-const linkedInAuthStatePath = path.join(automationArtifactRoot, "linkedin-storage-state.json");
 
 function randomInt(min, max) {
   const lower = Math.ceil(min);
@@ -21,47 +22,6 @@ function ensureActionBudget() {
   if (actionsToday >= env.linkedInMaxActionsPerDay) {
     throw new Error("Daily LinkedIn action limit reached.");
   }
-}
-
-async function launchLinkedInBrowser() {
-  const launchOptions = [{ headless: true }, { headless: true, channel: "chrome" }, { headless: true, channel: "msedge" }];
-  let lastError = null;
-
-  for (const options of launchOptions) {
-    try {
-      return await chromium.launch(options);
-    } catch (error) {
-      lastError = error;
-    }
-  }
-
-  throw new Error(
-    `Unable to launch a browser for LinkedIn publishing. ${String(lastError?.message || lastError || "Unknown browser launch error")}`
-  );
-}
-
-async function createLinkedInContext(browser) {
-  const baseOptions = { viewport: { width: 1366, height: 768 } };
-
-  try {
-    await fs.access(linkedInAuthStatePath);
-    try {
-      return await browser.newContext({ ...baseOptions, storageState: linkedInAuthStatePath });
-    } catch (error) {
-      logInfo("LinkedIn auth state could not be loaded; starting fresh session.", {
-        rawError: error?.message || "unknown_storage_state_error",
-      });
-    }
-  } catch (_error) {
-    // No saved LinkedIn session yet.
-  }
-
-  return browser.newContext(baseOptions);
-}
-
-async function saveLinkedInAuthState(context) {
-  await fs.mkdir(path.dirname(linkedInAuthStatePath), { recursive: true });
-  await context.storageState({ path: linkedInAuthStatePath });
 }
 
 async function humanDelay(page, minMs = 2000, maxMs = 5000) {
@@ -90,6 +50,17 @@ function toHumanReadablePublishError(errorMessage, stepName) {
   const normalized = String(errorMessage || "").toLowerCase();
 
   if (
+    normalized.includes("linkedin is not connected") ||
+    normalized.includes("not connected")
+  ) {
+    return "Unable to connect LinkedIn. Please try again.";
+  }
+
+  if (normalized.includes("session expired")) {
+    return "Session expired. Please reconnect LinkedIn.";
+  }
+
+  if (
     normalized.includes("executable") ||
     normalized.includes("browser launch") ||
     normalized.includes("chrome") ||
@@ -100,10 +71,6 @@ function toHumanReadablePublishError(errorMessage, stepName) {
     return "LinkedIn browser could not start. Install Chrome, Edge, or Playwright browsers, then retry.";
   }
 
-  if (normalized.includes("credentials") || normalized.includes("login")) {
-    return "LinkedIn login session expired. Re-authentication is required.";
-  }
-
   if (
     normalized.includes("verification") ||
     normalized.includes("checkpoint") ||
@@ -112,7 +79,7 @@ function toHumanReadablePublishError(errorMessage, stepName) {
     normalized.includes("two-factor") ||
     normalized.includes("2fa")
   ) {
-    return "LinkedIn requires manual verification before posting. Complete the sign-in challenge, then retry.";
+    return "Session expired. Please reconnect LinkedIn.";
   }
 
   if (
@@ -121,7 +88,7 @@ function toHumanReadablePublishError(errorMessage, stepName) {
     normalized.includes("not found") ||
     normalized.includes("locator")
   ) {
-    return "LinkedIn UI changed. System is updating automatically.";
+    return "LinkedIn UI changed. Please try again.";
   }
 
   if (normalized.includes("action limit")) {
@@ -166,37 +133,13 @@ function attachDebugListeners(page, state) {
 }
 
 async function captureFailureArtifacts(page, state) {
-  const timestamp = Date.now();
-  const screenshotPath = path.join(automationArtifactRoot, `linkedin-failure-${timestamp}-attempt-${state.attempt}.png`);
-  const debugPath = path.join(automationArtifactRoot, `linkedin-failure-${timestamp}-attempt-${state.attempt}.json`);
-
-  await fs.mkdir(automationArtifactRoot, { recursive: true });
   state.currentUrl = page.url();
-
-  await page.screenshot({ path: screenshotPath, fullPage: true }).catch(() => {});
-  await fs
-    .writeFile(
-      debugPath,
-      JSON.stringify(
-        {
-          failedStep: state.step,
-          currentUrl: state.currentUrl,
-          consoleMessages: state.consoleMessages,
-          pageErrors: state.pageErrors,
-          requestFailures: state.requestFailures,
-        },
-        null,
-        2
-      ),
-      "utf8"
-    )
-    .catch(() => {});
-
   return {
-    screenshotPath,
-    debugPath,
     failedStep: state.step,
     currentUrl: state.currentUrl,
+    consoleMessages: state.consoleMessages.slice(-20),
+    pageErrors: state.pageErrors.slice(-10),
+    requestFailures: state.requestFailures.slice(-10),
   };
 }
 
@@ -214,7 +157,7 @@ async function findFirstVisibleLocator(locators, timeoutMs = 10000) {
   throw lastError || new Error("LinkedIn selector matching failed");
 }
 
-async function ensureLinkedInSession(page, state, context) {
+async function ensureLinkedInSession(page, state, userId) {
   setStep(state, "check_session");
   await page.goto("https://www.linkedin.com/feed/", { waitUntil: "domcontentloaded", timeout: 45000 });
   await page.waitForSelector("body", { timeout: 10000 });
@@ -225,57 +168,18 @@ async function ensureLinkedInSession(page, state, context) {
     page.url().includes("/verify") ||
     (await page.getByText(/verification|security check|captcha|checkpoint|two-factor/i).first().isVisible({ timeout: 1800 }).catch(() => false));
 
-  if (verificationVisible) {
-    throw new Error("LinkedIn requires manual verification before posting.");
-  }
-
-  const emailInput = page.getByLabel(/email or phone/i).first();
-  const passwordInput = page.getByLabel(/password/i).first();
   const loginVisible =
     page.url().includes("/login") ||
-    (await emailInput.isVisible({ timeout: 1800 }).catch(() => false)) ||
-    (await passwordInput.isVisible({ timeout: 1800 }).catch(() => false));
+    (await page.getByRole("button", { name: /^sign in$/i }).first().isVisible({ timeout: 1800 }).catch(() => false));
 
-  if (!loginVisible) {
-    setStep(state, "session_active");
-    return;
+  if (verificationVisible || loginVisible) {
+    const error = new Error("Session expired. Please reconnect LinkedIn.");
+    error.code = "session_expired";
+    throw error;
   }
 
-  if (!env.linkedInEmail || !env.linkedInPassword) {
-    throw new Error("LinkedIn credentials are missing for re-login.");
-  }
-
-  setStep(state, "login_email");
-  await emailInput.waitFor({ state: "visible", timeout: 12000 });
-  await emailInput.fill("");
-  await emailInput.pressSequentially(env.linkedInEmail, { delay: randomInt(45, 110) });
-  actionsToday += 1;
-  await humanDelay(page, 900, 1700);
-
-  setStep(state, "login_password");
-  await passwordInput.waitFor({ state: "visible", timeout: 12000 });
-  await passwordInput.fill("");
-  await passwordInput.pressSequentially(env.linkedInPassword, { delay: randomInt(45, 120) });
-  actionsToday += 1;
-  await humanDelay(page, 900, 1700);
-
-  setStep(state, "login_submit");
-  await page.getByRole("button", { name: /^sign in$/i }).first().click({ timeout: 10000 });
-  actionsToday += 1;
-
-  await page.waitForLoadState("networkidle", { timeout: 30000 }).catch(() => {});
-
-  const stillOnLogin =
-    page.url().includes("/login") ||
-    (await page.getByRole("button", { name: /^sign in$/i }).first().isVisible({ timeout: 1800 }).catch(() => false)) ||
-    (await page.getByText(/verification|security check|captcha|checkpoint|two-factor/i).first().isVisible({ timeout: 1800 }).catch(() => false));
-
-  if (stillOnLogin) {
-    throw new Error("LinkedIn login session could not be established.");
-  }
-
-  await saveLinkedInAuthState(context).catch(() => {});
-  setStep(state, "session_recovered");
+  await touchLinkedInSession(userId).catch(() => {});
+  setStep(state, "session_active");
 }
 
 async function openPostComposer(page, state) {
@@ -369,30 +273,26 @@ async function fillComposerAndSubmit(page, content, state) {
 }
 
 async function publishToLinkedInLiveMode(postPayload) {
-  if (!env.linkedInEmail || !env.linkedInPassword) {
-    logProductEvent(
-      "AUTOMATION_FAILURE",
-      "Posting could not start because LinkedIn credentials are missing.",
-      "Add LinkedIn credentials to enable live posting.",
-      { status: "error" }
-    );
-
+  const connection = await getLinkedInConnectionStatus(getDefaultUserId());
+  if (!connection.connected) {
     return {
       published: false,
-      reason: "LINKEDIN_EMAIL and LINKEDIN_PASSWORD are required for live publishing.",
+      reason: "Unable to connect LinkedIn. Please try again.",
       mode: "live",
+      failedStep: "missing_session",
     };
   }
 
   let browser = null;
   let context = null;
   let page = null;
-  const maxAttempts = 3;
+  const maxAttempts = 2;
+  const userId = getDefaultUserId();
 
   try {
     try {
-      browser = await launchLinkedInBrowser();
-      context = await createLinkedInContext(browser);
+      browser = await launchBrowser({ headless: true });
+      context = await createLinkedInContextFromSession(browser, userId);
       page = await context.newPage();
     } catch (error) {
       const humanMessage = toHumanReadablePublishError(error?.message, "browser launch");
@@ -417,7 +317,7 @@ async function publishToLinkedInLiveMode(postPayload) {
       try {
         setStep(state, "attempt_start");
         await humanDelay(page, 900, 1700);
-        await ensureLinkedInSession(page, state, context);
+        await ensureLinkedInSession(page, state, userId);
         await openPostComposer(page, state);
         await fillComposerAndSubmit(page, postPayload.content, state);
 
@@ -450,15 +350,13 @@ async function publishToLinkedInLiveMode(postPayload) {
           {
             step: state.step,
             currentUrl: details.currentUrl,
-            screenshotPath: details.screenshotPath,
-            debugPath: details.debugPath,
             attempt,
             maxAttempts,
             rawError: error?.message || "unknown_automation_error",
           }
         );
 
-        if (attempt < maxAttempts) {
+        if (attempt < maxAttempts && !String(error?.message || "").toLowerCase().includes("session expired")) {
           setStep(state, "retry_refresh");
           await page.reload({ waitUntil: "domcontentloaded", timeout: 35000 }).catch(() => {});
           await page.waitForLoadState("networkidle", { timeout: 20000 }).catch(() => {});

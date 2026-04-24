@@ -1,28 +1,32 @@
 require("dotenv").config();
 
-const express = require("express");
 const cors = require("cors");
+const express = require("express");
+const helmet = require("helmet");
+const pinoHttp = require("pino-http");
+const rateLimit = require("express-rate-limit");
+const { ipKeyGenerator } = require("express-rate-limit");
 
 const { loadEnv } = require("./src/config/env");
-const { initDatabase } = require("./src/services/db");
+const { AppError } = require("./src/lib/http");
+const { formatValidationMessage } = require("./src/lib/validation");
 const { createApiRouter } = require("./src/routes/api");
+const { initDatabase } = require("./src/services/db");
+const { logger, logError, logInfo } = require("./src/services/logger");
 const { startScheduler } = require("./src/services/scheduler");
-const { logInfo, logError } = require("./src/services/logger");
 
 const app = express();
 const env = loadEnv();
 const allowedOrigins = env.corsOrigin
   .split(",")
   .map((origin) => origin.trim())
-  .filter((origin) => origin);
-const generationRequestWindowMs = 60000;
-const generationRequestLimit = 12;
-const generationRequestLog = new Map();
+  .filter(Boolean);
 
 function validateRuntimeConfiguration() {
   const missing = [];
   if (!env.databaseUrl) missing.push("DATABASE_URL");
   if (!env.huggingFaceApiToken) missing.push("HF_TOKEN");
+  if (!env.linkedInSessionSecret) missing.push("LINKEDIN_SESSION_SECRET");
 
   if (missing.length) {
     throw new Error(`Missing required environment variables: ${missing.join(", ")}`);
@@ -41,57 +45,109 @@ function validateRuntimeConfiguration() {
   }
 }
 
-function applyGenerationRateLimit(req, res, next) {
-  const isContentGenerationRoute = req.method === "POST" && req.path.startsWith("/api/content");
-  if (!isContentGenerationRoute) {
-    next();
-    return;
-  }
-
-  const ip = req.ip || req.socket?.remoteAddress || "unknown";
-  const now = Date.now();
-  const recentRequests = (generationRequestLog.get(ip) || []).filter((timestamp) => now - timestamp < generationRequestWindowMs);
-
-  if (recentRequests.length >= generationRequestLimit) {
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler(_req, res) {
     res.status(429).json({
-      error: "rate_limit_exceeded",
-      message: "Too many generation requests. Please wait a minute and try again.",
+      success: false,
+      data: null,
+      error: {
+        code: "rate_limit_exceeded",
+        message: "Too many requests. Please wait a moment and retry.",
+      },
+      meta: null,
     });
-    return;
-  }
+  },
+});
 
-  recentRequests.push(now);
-  generationRequestLog.set(ip, recentRequests);
-  next();
-}
+const contentGenerationLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 12,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator(req) {
+    return `${ipKeyGenerator(req.ip)}:${req.path}`;
+  },
+  handler(_req, res) {
+    res.status(429).json({
+      success: false,
+      data: null,
+      error: {
+        code: "rate_limit_exceeded",
+        message: "Too many generation requests. Please wait a minute and try again.",
+      },
+      meta: null,
+    });
+  },
+});
 
+app.set("trust proxy", 1);
+app.disable("x-powered-by");
+app.use(
+  pinoHttp({
+    logger,
+    genReqId(req, res) {
+      const existing = req.headers["x-request-id"];
+      if (existing) {
+        return existing;
+      }
+
+      const generated = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+      res.setHeader("x-request-id", generated);
+      return generated;
+    },
+    serializers: {
+      req(req) {
+        return {
+          id: req.id,
+          method: req.method,
+          url: req.url,
+        };
+      },
+      res(res) {
+        return {
+          statusCode: res.statusCode,
+        };
+      },
+    },
+  })
+);
+app.use(
+  helmet({
+    crossOriginResourcePolicy: false,
+  })
+);
 app.use(
   cors({
     origin(origin, callback) {
-      if (!origin) {
-        callback(null, true);
-        return;
-      }
-
-      if (allowedOrigins.includes(origin)) {
+      if (!origin || allowedOrigins.includes(origin)) {
         callback(null, true);
         return;
       }
 
       callback(new Error("Origin not allowed by CORS"));
     },
+    credentials: false,
   })
 );
 app.use(express.json({ limit: "1mb" }));
-app.use(applyGenerationRateLimit);
+app.use(apiLimiter);
 
 app.get("/health", (_req, res) => {
-  res.json({ ok: true, service: "kevstack-ai-backend" });
+  res.json({
+    ok: true,
+    service: "kevstack-ai-backend",
+    version: "v1",
+  });
 });
 
-app.use("/api", createApiRouter());
+app.use("/api", createApiRouter({ contentGenerationLimiter }));
+app.use("/api/v1", createApiRouter({ contentGenerationLimiter }));
 
-app.use((err, _req, res, _next) => {
+app.use((err, req, res, _next) => {
   if (err?.type === "entity.parse.failed") {
     res.status(400).json({
       success: false,
@@ -100,26 +156,34 @@ app.use((err, _req, res, _next) => {
         code: "validation_error",
         message: "Invalid JSON body. Please send a valid JSON payload.",
       },
+      meta: {
+        requestId: req.id,
+      },
     });
     return;
   }
 
   const status = Number.isInteger(err?.status) ? err.status : 500;
   const code = typeof err?.code === "string" && err.code ? err.code : "internal_server_error";
+  const validationMessage = formatValidationMessage(err);
   const message =
-    status >= 500 ? "An unexpected error occurred." : err?.message || "Request could not be completed.";
+    status >= 500
+      ? "An unexpected error occurred."
+      : validationMessage || err?.message || "Request could not be completed.";
 
   if (status >= 500) {
     logError("API_FAILURE", err?.message || "Unhandled backend error", "Global error middleware response", {
       stack: err?.stack,
       status: err?.status,
       code: err?.code,
+      requestId: req.id,
     });
   } else {
     logInfo("Client request rejected", {
       status,
       code,
       message,
+      requestId: req.id,
     });
   }
 
@@ -129,6 +193,10 @@ app.use((err, _req, res, _next) => {
     error: {
       code,
       message,
+      details: err instanceof AppError ? err.details : undefined,
+    },
+    meta: {
+      requestId: req.id,
     },
   });
 });

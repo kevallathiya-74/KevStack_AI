@@ -1,4 +1,22 @@
+const pino = require("pino");
 const { saveLog } = require("./db");
+
+const logger = pino({
+  level: process.env.LOG_LEVEL || "info",
+  base: undefined,
+  timestamp: pino.stdTimeFunctions.isoTime,
+  redact: {
+    paths: [
+      "req.headers.authorization",
+      "req.headers.x-api-key",
+      "headers.authorization",
+      "headers.x-api-key",
+      "details.linkedInPassword",
+      "details.huggingFaceApiToken",
+    ],
+    censor: "[REDACTED]",
+  },
+});
 
 const pendingLogs = [];
 const MAX_PENDING_LOGS = 200;
@@ -19,7 +37,13 @@ async function flushLogQueue() {
       if (entry.retryCount < MAX_LOG_RETRIES) {
         pendingLogs.push({ ...entry, retryCount: entry.retryCount + 1 });
       } else {
-        console.error("[LOGGER]", `Failed to persist ${entry.levelLabel} log:`, error?.message || "Unknown logger error");
+        logger.error(
+          {
+            err: error,
+            logType: entry.payload.type,
+          },
+          "Failed to persist log entry"
+        );
       }
     }
   }
@@ -27,63 +51,66 @@ async function flushLogQueue() {
   flushingLogs = false;
 }
 
-function persistLogSafely(payload, levelLabel) {
-  try {
-    if (pendingLogs.length >= MAX_PENDING_LOGS) {
-      pendingLogs.shift();
-    }
-
-    pendingLogs.push({ payload, levelLabel, retryCount: 0 });
-    Promise.resolve(flushLogQueue()).catch((error) => {
-      console.error("[LOGGER]", `Failed to flush ${levelLabel} logs:`, error?.message || "Unknown logger error");
-    });
-  } catch (error) {
-    console.error("[LOGGER]", `Failed to persist ${levelLabel} log:`, error?.message || "Unknown logger error");
+function persistLogSafely(payload) {
+  if (pendingLogs.length >= MAX_PENDING_LOGS) {
+    pendingLogs.shift();
   }
+
+  pendingLogs.push({ payload, retryCount: 0 });
+  Promise.resolve(flushLogQueue()).catch((error) => {
+    logger.error({ err: error }, "Failed to flush log queue");
+  });
 }
 
 function logInfo(message, details = {}) {
-  const payload = { message, ...details };
-  console.log("[INFO]", message, Object.keys(details).length ? JSON.stringify(details) : "");
-  persistLogSafely({ level: "info", type: "SYSTEM_INFO", message, details: payload }, "info");
+  logger.info(details, message);
+  persistLogSafely({ level: "info", type: "SYSTEM_INFO", message, details: { message, ...details } });
+}
+
+function logWarn(type, message, details = {}) {
+  logger.warn({ type, ...details }, message);
+  persistLogSafely({
+    level: "warning",
+    type,
+    message,
+    cause: message,
+    fix_applied: details.fixApplied || "",
+    details,
+  });
 }
 
 function logError(type, cause, fixApplied, details = {}) {
-  console.error("[ERROR]", `[${type}]`, cause, "| Fix:", fixApplied);
-  persistLogSafely(
-    {
-      level: "error",
-      type,
-      message: cause,
-      cause,
-      fix_applied: fixApplied,
-      details,
-    },
-    "error"
-  );
+  logger.error({ type, fixApplied, ...details }, cause);
+  persistLogSafely({
+    level: "error",
+    type,
+    message: cause,
+    cause,
+    fix_applied: fixApplied,
+    details,
+  });
 }
 
 function logProductEvent(type, message, action, options = {}) {
   const status = typeof options.status === "string" ? options.status.toLowerCase() : "success";
   const details = options.details && typeof options.details === "object" ? options.details : {};
-  const level = status === "error" ? "error" : status === "warning" ? "warning" : "info";
+  const level = status === "error" ? "error" : status === "warning" ? "warn" : "info";
 
-  console.log(`[${level.toUpperCase()}]`, `[${type}]`, message, "| Action:", action);
-  persistLogSafely(
-    {
-      level,
-      type,
-      message,
-      cause: message,
-      fix_applied: action,
-      details,
-    },
-    level
-  );
+  logger[level]({ type, action, status, ...details }, message);
+  persistLogSafely({
+    level: status === "warning" ? "warning" : status === "error" ? "error" : "info",
+    type,
+    message,
+    cause: message,
+    fix_applied: action,
+    details,
+  });
 }
 
 module.exports = {
-  logInfo,
+  logger,
   logError,
+  logInfo,
   logProductEvent,
+  logWarn,
 };
