@@ -13,9 +13,9 @@ const numberFormatter = new Intl.NumberFormat();
 const RETENTION_DAYS = 7;
 
 const STATUS_ICON: Record<FeedbackLog["status"], string> = {
-  success: "✅",
-  warning: "⚠️",
-  error: "❌",
+  success: "OK",
+  warning: "!",
+  error: "X",
 };
 
 type GroupedFeedbackLog = FeedbackLog & {

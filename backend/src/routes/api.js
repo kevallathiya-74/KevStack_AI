@@ -1,42 +1,25 @@
 const express = require("express");
-const { runContentPipeline } = require("../services/pipeline");
 const { loadEnv } = require("../config/env");
-const { getRecentMetrics, getRecentLogs, getRecentPosts, getPostById, saveMetric } = require("../services/db");
-const { transformLogsForFeedback } = require("../services/logFeedback");
+const {
+  analyticsQuerySchema,
+  approvalGenerateSchema,
+  dashboardQuerySchema,
+  logsQuerySchema,
+  metricsBodySchema,
+} = require("../middleware/apiSchemas");
+const { asyncHandler, createApiError, sendSuccess } = require("../lib/http");
+const { validate } = require("../lib/validation");
+const { createLinkedInRouter } = require("./linkedin");
 const { createPostApprovalRouter } = require("./postApproval");
+const { getRecentMetrics, getRecentLogs, getRecentPosts, getPostById, saveMetric } = require("../services/db");
+const { getLinkedInConnectionStatus, getDefaultUserId } = require("../services/connectionService");
+const { transformLogsForFeedback } = require("../services/logFeedback");
+const { runContentPipeline } = require("../services/pipeline");
 
 const env = loadEnv();
 const metricsRateLog = new Map();
 const METRICS_RATE_WINDOW_MS = 5 * 60 * 1000;
 const MAX_METRICS_UPDATES_PER_WINDOW = 2;
-
-function sendSuccess(res, data, status = 200) {
-  res.status(status).json({
-    success: true,
-    data,
-    error: null,
-  });
-}
-
-function createApiError(status, code, message) {
-  const error = new Error(message);
-  error.status = status;
-  error.code = code;
-  return error;
-}
-
-function sanitizeTopic(rawTopic) {
-  const topic = String(rawTopic || "")
-    .replace(/[\u0000-\u001F\u007F]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  if (!topic) {
-    return "";
-  }
-
-  return topic.replace(/[{}$<>`]/g, "").slice(0, 180).trim();
-}
 
 function registerMetricWrite(postId, requestIp) {
   const key = `${postId}:${requestIp || "unknown"}`;
@@ -142,34 +125,50 @@ function toGenerationPayload(result) {
   };
 }
 
-function createApiRouter() {
+function createApiRouter(options = {}) {
   const router = express.Router();
+  const contentGenerationLimiter = options.contentGenerationLimiter;
 
   router.use("/approval", createPostApprovalRouter());
+  router.use("/linkedin", createLinkedInRouter());
 
   router.get("/health", (_req, res) => {
-    sendSuccess(res, { ok: true, module: "api" });
+    sendSuccess(res, { ok: true, module: "api", version: "v1" });
   });
 
-  router.get("/dashboard", async (_req, res, next) => {
-    try {
-      const [posts, metrics, logs] = await Promise.all([getRecentPosts(5), getRecentMetrics(10), getRecentLogs(10)]);
-      sendSuccess(res, { posts, metrics, logs });
-    } catch (error) {
-      next(error);
-    }
-  });
+  router.get(
+    "/dashboard",
+    asyncHandler(async (req, res) => {
+      const query = validate(dashboardQuerySchema, req.query);
+      const [posts, metrics, logs] = await Promise.all([
+        getRecentPosts({ limit: query.postLimit, offset: query.offset }),
+        getRecentMetrics({ limit: query.metricLimit, offset: query.offset }),
+        getRecentLogs({ limit: query.logLimit, offset: query.offset }),
+      ]);
 
-  router.get("/analytics", async (_req, res, next) => {
-    try {
-      const metrics = await getRecentMetrics(30);
-      sendSuccess(res, { metrics });
-    } catch (error) {
-      next(error);
-    }
-  });
+      sendSuccess(
+        res,
+        { posts, metrics, logs },
+        200,
+        {
+          limit: query.limit,
+          offset: query.offset,
+        }
+      );
+    })
+  );
 
-  router.get("/settings", (_req, res) => {
+  router.get(
+    "/analytics",
+    asyncHandler(async (req, res) => {
+      const query = validate(analyticsQuerySchema, req.query);
+      const metrics = await getRecentMetrics({ limit: query.limit, offset: query.offset, sort: query.sort });
+      sendSuccess(res, { metrics }, 200, { limit: query.limit, offset: query.offset, sort: query.sort });
+    })
+  );
+
+  router.get("/settings", asyncHandler(async (_req, res) => {
+    const linkedInConnection = await getLinkedInConnectionStatus(getDefaultUserId());
     sendSuccess(res, {
       safeMode: env.linkedInSafeMode,
       publishEnabled: env.linkedInPublishEnabled,
@@ -177,107 +176,62 @@ function createApiRouter() {
       maxActionsPerDay: env.linkedInMaxActionsPerDay,
       defaultSchedulerTopic: env.defaultSchedulerTopic,
       huggingFaceConfigured: Boolean(env.huggingFaceApiToken),
-      hasLinkedInCredentials: Boolean(env.linkedInEmail && env.linkedInPassword),
+      linkedInConnection,
     });
-  });
+  }));
 
-  router.post("/metrics", async (req, res, next) => {
-    try {
-      const postId = Number(req.body?.post_id);
-      const impressions = Number(req.body?.impressions ?? 0);
-      const likes = Number(req.body?.likes ?? 0);
-      const comments = Number(req.body?.comments ?? 0);
-      const shares = Number(req.body?.shares ?? 0);
-
-      if (!Number.isInteger(postId) || postId <= 0) {
-        next(createApiError(400, "validation_error", "post_id must be a positive integer"));
-        return;
-      }
-
-      const metricValues = { impressions, likes, comments, shares };
-      const hasInvalidMetric = Object.values(metricValues).some(
-        (value) => !Number.isInteger(value) || value < 0 || value > env.maxMetricValue
-      );
-      if (hasInvalidMetric) {
-        next(
-          createApiError(
-            400,
-            "validation_error",
-            `impressions, likes, comments, and shares must be integers between 0 and ${env.maxMetricValue}`
-          )
-        );
-        return;
-      }
-
+  router.post(
+    "/metrics",
+    asyncHandler(async (req, res) => {
+      const payload = validate(metricsBodySchema(env.maxMetricValue), req.body);
       const requestIp = req.ip || req.socket?.remoteAddress || "unknown";
-      if (registerMetricWrite(postId, requestIp)) {
-        next(
-          createApiError(
-            429,
-            "rate_limit_exceeded",
-            "Too many metric updates for this post. Please wait a few minutes and retry."
-          )
+
+      if (registerMetricWrite(payload.post_id, requestIp)) {
+        throw createApiError(
+          429,
+          "rate_limit_exceeded",
+          "Too many metric updates for this post. Please wait a few minutes and retry."
         );
-        return;
       }
 
-      const post = await getPostById(postId);
+      const post = await getPostById(payload.post_id);
       if (!post) {
-        next(createApiError(404, "validation_error", "Referenced post_id does not exist"));
-        return;
+        throw createApiError(404, "validation_error", "Referenced post_id does not exist");
       }
 
-      const metric = await saveMetric({
-        post_id: postId,
-        impressions,
-        likes,
-        comments,
-        shares,
-      });
-
+      const metric = await saveMetric(payload);
       sendSuccess(res, { metric }, 201);
-    } catch (error) {
-      next(error);
-    }
-  });
+    })
+  );
 
-  router.get("/logs", async (_req, res, next) => {
-    try {
-      const rawLogs = await getRecentLogs(120);
+  router.get(
+    "/logs",
+    asyncHandler(async (req, res) => {
+      const query = validate(logsQuerySchema, req.query);
+      const rawLogs = await getRecentLogs({ limit: query.limit, offset: query.offset, level: query.level });
       const logs = transformLogsForFeedback(rawLogs);
-      sendSuccess(res, { logs });
-    } catch (error) {
-      next(error);
-    }
-  });
+      sendSuccess(res, { logs }, 200, { limit: query.limit, offset: query.offset, level: query.level });
+    })
+  );
 
-  router.post("/content/generate", async (req, res, next) => {
-    try {
-      const topic = sanitizeTopic(req.body?.topic);
-      if (!topic || topic.length < 5) {
-        next(createApiError(400, "validation_error", "topic is required and must contain at least 5 characters"));
-        return;
-      }
-
-      const result = await runContentPipeline(topic);
+  router.post(
+    "/content/generate",
+    contentGenerationLimiter,
+    asyncHandler(async (req, res) => {
+      const payload = validate(approvalGenerateSchema, req.body);
+      const result = await runContentPipeline(payload.topic);
       sendSuccess(res, toGenerationPayload(result));
-    } catch (error) {
-      const mappedError = mapPipelineError(error);
-      if (mappedError) {
-        next(mappedError);
-        return;
-      }
-      next(error);
-    }
-  });
+    })
+  );
 
-  router.post("/content/generate-from-data", async (_req, res, next) => {
-    try {
+  router.post(
+    "/content/generate-from-data",
+    contentGenerationLimiter,
+    asyncHandler(async (_req, res) => {
       const [metrics, posts] = await Promise.all([getRecentMetrics(30), getRecentPosts(5)]);
       const topic = buildDataDrivenTopic(metrics, posts);
       if (!topic) {
-        next(createApiError(400, "validation_error", "No real posts or metrics found. Add data first, then generate from data."));
-        return;
+        throw createApiError(400, "validation_error", "No real posts or metrics found. Add data first, then generate from data.");
       }
 
       const result = await runContentPipeline(topic);
@@ -289,15 +243,8 @@ function createApiRouter() {
           postsCount: posts.length,
         },
       });
-    } catch (error) {
-      const mappedError = mapPipelineError(error);
-      if (mappedError) {
-        next(mappedError);
-        return;
-      }
-      next(error);
-    }
-  });
+    })
+  );
 
   router.post("/publish", (_req, _res, next) => {
     next(
@@ -307,6 +254,11 @@ function createApiRouter() {
         "Direct publishing is disabled. Approve draft first and use /api/approval/publish."
       )
     );
+  });
+
+  router.use((error, _req, _res, next) => {
+    const mappedError = mapPipelineError(error);
+    next(mappedError || error);
   });
 
   return router;

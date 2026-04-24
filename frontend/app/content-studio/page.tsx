@@ -198,7 +198,15 @@ export default function ContentStudioPage() {
       if (result.published) {
         toastSuccess(message);
       } else {
-        toastInfo(message);
+        if (
+          message === "Session expired. Please reconnect LinkedIn." ||
+          message === "Unable to connect LinkedIn. Please try again."
+        ) {
+          toastError(message);
+          setStatusTone("error");
+        } else {
+          toastInfo(message);
+        }
       }
     } catch (error) {
       const message = getUserFriendlyError(error, "Publish failed. Please try again.");

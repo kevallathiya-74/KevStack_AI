@@ -1,4 +1,4 @@
-import axios from "axios";
+import axios, { AxiosError, type AxiosRequestConfig } from "axios";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:4000";
 
@@ -15,6 +15,7 @@ type ApiErrorPayload = {
     | {
         code?: string;
         message?: string;
+        details?: unknown;
       }
     | null;
   message?: string;
@@ -23,7 +24,8 @@ type ApiErrorPayload = {
 type ApiEnvelope<T> = {
   success: boolean;
   data: T;
-  error: null | { code?: string; message?: string };
+  error: null | { code?: string; message?: string; details?: unknown };
+  meta?: Record<string, unknown> | null;
 };
 
 function unwrapEnvelope<T>(payload: unknown): T {
@@ -45,14 +47,37 @@ function unwrapEnvelope<T>(payload: unknown): T {
   return payload as T;
 }
 
+function shouldRetry(error: AxiosError, remainingRetries: number) {
+  if (remainingRetries <= 0) {
+    return false;
+  }
+
+  if (error.code === "ECONNABORTED" || !error.response) {
+    return true;
+  }
+
+  const status = error.response.status;
+  return status === 502 || status === 503 || status === 504;
+}
+
+async function requestWithRetry<T>(config: AxiosRequestConfig, retryCount = 1): Promise<T> {
+  try {
+    const response = await api.request(config);
+    return unwrapEnvelope<T>(response.data);
+  } catch (error) {
+    if (axios.isAxiosError(error) && shouldRetry(error, retryCount)) {
+      return requestWithRetry<T>(config, retryCount - 1);
+    }
+
+    throw error;
+  }
+}
+
 export function getUserFriendlyError(error: unknown, fallbackMessage: string) {
   if (axios.isAxiosError(error)) {
     const status = error.response?.status;
     const payload = (error.response?.data || {}) as ApiErrorPayload;
-    const envelopeError =
-      payload.error && typeof payload.error === "object"
-        ? payload.error
-        : null;
+    const envelopeError = payload.error && typeof payload.error === "object" ? payload.error : null;
     const code =
       typeof payload.error === "string"
         ? payload.error
@@ -70,6 +95,22 @@ export function getUserFriendlyError(error: unknown, fallbackMessage: string) {
       return message;
     }
 
+    if (code === "linkedin_connect_failed") {
+      return "Unable to connect LinkedIn. Please try again.";
+    }
+
+    if (code === "linkedin_verification_required") {
+      return "LinkedIn asked for verification. Complete it in the opened browser, then click Connect LinkedIn again.";
+    }
+
+    if (code === "linkedin_login_timeout") {
+      return "LinkedIn login timed out. Please click Connect LinkedIn and finish the login quickly.";
+    }
+
+    if (code === "duplicate_post" && message) {
+      return message;
+    }
+
     if (code === "rate_limit_exceeded") {
       return "Too many requests right now. Please wait a minute and try again.";
     }
@@ -79,7 +120,7 @@ export function getUserFriendlyError(error: unknown, fallbackMessage: string) {
     }
 
     if (status === 401 || status === 403) {
-      return "Authorization failed. Please check backend API configuration.";
+      return message || "Request was rejected.";
     }
 
     if (status === 404) {
@@ -95,7 +136,7 @@ export function getUserFriendlyError(error: unknown, fallbackMessage: string) {
     }
 
     if (status && status >= 500) {
-      return "Server is temporarily unavailable. Please try again shortly.";
+      return message || "Server is temporarily unavailable. Please try again shortly.";
     }
 
     if (error.code === "ECONNABORTED") {
@@ -129,6 +170,7 @@ export type DashboardPost = {
   cta: string;
   status: string;
   created_at: string;
+  updated_at?: string;
 };
 
 export type ApprovalDraft = DashboardPost;
@@ -152,6 +194,14 @@ export type FeedbackLog = {
   time: string;
   action: string;
   created_at: string;
+};
+
+export type LinkedInConnection = {
+  connected: boolean;
+  profileName: string;
+  profileUrl: string;
+  connectedAt: string | null;
+  lastValidatedAt: string | null;
 };
 
 export type GeneratedHookScore = {
@@ -180,6 +230,10 @@ export type GenerateContentResponse = {
   hookScores: GeneratedHookScore[];
   growthDecision?: GrowthDecision | null;
   post: DashboardPost;
+  source?: {
+    metricsCount: number;
+    postsCount: number;
+  };
 };
 
 export type AppSettings = {
@@ -189,7 +243,7 @@ export type AppSettings = {
   maxActionsPerDay: number;
   defaultSchedulerTopic: string;
   huggingFaceConfigured: boolean;
-  hasLinkedInCredentials: boolean;
+  linkedInConnection: LinkedInConnection;
 };
 
 export type SubmitMetricInput = {
@@ -201,46 +255,64 @@ export type SubmitMetricInput = {
 };
 
 export async function fetchDashboard() {
-  const { data } = await api.get("/api/dashboard");
-  return unwrapEnvelope<{ posts: DashboardPost[]; metrics: DashboardMetric[]; logs: DashboardLog[] }>(data);
+  return requestWithRetry<{ posts: DashboardPost[]; metrics: DashboardMetric[]; logs: DashboardLog[] }>(
+    {
+      method: "GET",
+      url: "/api/dashboard",
+      params: {
+        postLimit: 8,
+        metricLimit: 30,
+        logLimit: 40,
+      },
+    },
+    1
+  );
 }
 
 export async function generateContent(topic: string) {
-  const { data } = await api.post("/api/content/generate", { topic });
-  return unwrapEnvelope<GenerateContentResponse>(data);
+  return requestWithRetry<GenerateContentResponse>({
+    method: "POST",
+    url: "/api/content/generate",
+    data: { topic },
+  });
 }
 
 export async function generateContentFromData() {
-  const { data } = await api.post("/api/content/generate-from-data");
-  return unwrapEnvelope<
-    GenerateContentResponse & {
-      source: {
-        metricsCount: number;
-        postsCount: number;
-      };
-    }
-  >(data);
+  return requestWithRetry<GenerateContentResponse>({
+    method: "POST",
+    url: "/api/content/generate-from-data",
+  });
 }
 
 export async function publishPost(post: { content: string }) {
-  const { data } = await api.post("/api/publish", post);
-  return unwrapEnvelope<{ published: boolean; reason: string; mode?: string; postsToday?: number; actionsToday?: number }>(
-    data
+  return requestWithRetry<{ published: boolean; reason: string; mode?: string; postsToday?: number; actionsToday?: number }>(
+    {
+      method: "POST",
+      url: "/api/publish",
+      data: post,
+    }
   );
 }
 
 export async function generateApprovalDraft(topic: string) {
-  const { data } = await api.post("/api/approval/generate", { topic });
-  return unwrapEnvelope<{ draft: ApprovalDraft; hookScores: GeneratedHookScore[]; flow: string[] }>(data);
+  return requestWithRetry<{ draft: ApprovalDraft; hookScores: GeneratedHookScore[]; flow: string[] }>({
+    method: "POST",
+    url: "/api/approval/generate",
+    data: { topic },
+  });
 }
 
 export async function fetchApprovalDrafts(
-  status: "pending_approval" | "approved" | "published" | "rejected" | "pending_manual" | "all" = "pending_approval"
+  status: "pending_approval" | "approved" | "published" | "rejected" | "pending_manual" | "generated" | "all" = "pending_approval"
 ) {
-  const { data } = await api.get("/api/approval/drafts", {
-    params: { status, limit: 30 },
-  });
-  return unwrapEnvelope<{ drafts: ApprovalDraft[] }>(data);
+  return requestWithRetry<{ drafts: ApprovalDraft[] }>(
+    {
+      method: "GET",
+      url: "/api/approval/drafts",
+      params: { status, limit: 30 },
+    },
+    1
+  );
 }
 
 export async function approveDraft(payload: {
@@ -250,36 +322,99 @@ export async function approveDraft(payload: {
   hook?: string;
   cta?: string;
 }) {
-  const { data } = await api.post("/api/approval/approve", payload);
-  return unwrapEnvelope<{ draft: ApprovalDraft }>(data);
+  return requestWithRetry<{ draft: ApprovalDraft }>({
+    method: "POST",
+    url: "/api/approval/approve",
+    data: payload,
+  });
 }
 
 export async function rejectDraft(postId: number) {
-  const { data } = await api.post("/api/approval/reject", { postId });
-  return unwrapEnvelope<{ draft: ApprovalDraft }>(data);
+  return requestWithRetry<{ draft: ApprovalDraft }>({
+    method: "POST",
+    url: "/api/approval/reject",
+    data: { postId },
+  });
 }
 
 export async function publishApprovedDraft(postId: number) {
-  const { data } = await api.post("/api/approval/publish", { postId }, { timeout: 120000 });
-  return unwrapEnvelope<{ published: boolean; reason: string; mode?: string; draft?: ApprovalDraft; rawReason?: string }>(data);
+  return requestWithRetry<{ published: boolean; reason: string; mode?: string; draft?: ApprovalDraft; rawReason?: string }>(
+    {
+      method: "POST",
+      url: "/api/approval/publish",
+      data: { postId },
+      timeout: 120000,
+    }
+  );
 }
 
 export async function fetchAnalytics() {
-  const { data } = await api.get("/api/analytics");
-  return unwrapEnvelope<{ metrics: DashboardMetric[] }>(data);
+  return requestWithRetry<{ metrics: DashboardMetric[] }>(
+    {
+      method: "GET",
+      url: "/api/analytics",
+      params: { limit: 60, sort: "created_at_desc" },
+    },
+    1
+  );
 }
 
 export async function fetchLogs() {
-  const { data } = await api.get("/api/logs");
-  return unwrapEnvelope<{ logs: FeedbackLog[] }>(data);
+  return requestWithRetry<{ logs: FeedbackLog[] }>(
+    {
+      method: "GET",
+      url: "/api/logs",
+      params: { limit: 120, level: "all" },
+    },
+    1
+  );
 }
 
 export async function fetchSettings() {
-  const { data } = await api.get("/api/settings");
-  return unwrapEnvelope<AppSettings>(data);
+  return requestWithRetry<AppSettings>(
+    {
+      method: "GET",
+      url: "/api/settings",
+    },
+    1
+  );
+}
+
+export async function fetchLinkedInStatus() {
+  return requestWithRetry<LinkedInConnection>(
+    {
+      method: "GET",
+      url: "/api/linkedin/status",
+    },
+    1
+  );
+}
+
+export async function connectLinkedIn() {
+  return requestWithRetry<LinkedInConnection>(
+    {
+      method: "POST",
+      url: "/api/linkedin/connect",
+      timeout: 240000,
+    },
+    0
+  );
+}
+
+export async function disconnectLinkedIn() {
+  return requestWithRetry<{ connected: boolean }>(
+    {
+      method: "POST",
+      url: "/api/linkedin/disconnect",
+    },
+    0
+  );
 }
 
 export async function submitMetric(payload: SubmitMetricInput) {
-  const { data } = await api.post("/api/metrics", payload);
-  return unwrapEnvelope<{ metric: DashboardMetric }>(data);
+  return requestWithRetry<{ metric: DashboardMetric }>({
+    method: "POST",
+    url: "/api/metrics",
+    data: payload,
+  });
 }

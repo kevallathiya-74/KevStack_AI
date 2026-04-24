@@ -7,10 +7,17 @@ import EmptyState from "@/components/ui/EmptyState";
 import { ErrorState } from "@/components/ui/ErrorState";
 import SkeletonCard from "@/components/ui/SkeletonCard";
 import { useToast } from "@/components/ui/ToastProvider";
-import { fetchSettings, generateContent, getUserFriendlyError, publishPost, type AppSettings } from "@/lib/api";
+import {
+  fetchSettings,
+  generateContent,
+  generateContentFromData,
+  getUserFriendlyError,
+  type AppSettings,
+  type GenerateContentResponse,
+} from "@/lib/api";
 
 export default function AutomationControlPage() {
-  const { success: toastSuccess, error: toastError, info: toastInfo } = useToast();
+  const { success: toastSuccess, error: toastError } = useToast();
   const [topic, setTopic] = useState("");
   const [status, setStatus] = useState("Idle. Enter a topic to start.");
   const [strategyHint, setStrategyHint] = useState("");
@@ -19,7 +26,7 @@ export default function AutomationControlPage() {
   const [error, setError] = useState<string | null>(null);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [generating, setGenerating] = useState(false);
-  const [publishing, setPublishing] = useState(false);
+  const [lastRun, setLastRun] = useState<GenerateContentResponse | null>(null);
 
   const loadAutomationContext = useCallback(async () => {
     setLoading(true);
@@ -61,15 +68,16 @@ export default function AutomationControlPage() {
       const generationPromise = generateContent(normalizedTopic);
       setStatus("Step 3/4: generating content, hooks, and CTA...");
       const result = await generationPromise;
+      setLastRun(result);
       if (result.growthDecision?.strategy) {
-        setStrategyHint(`Strategy: ${result.growthDecision.strategy} — ${result.growthDecision.reason}`);
+        setStrategyHint(`Strategy: ${result.growthDecision.strategy} - ${result.growthDecision.reason}`);
       }
       const message = "Step 4/4: generated successfully.";
       setStatus(message);
       setStatusTone("success");
       toastSuccess("Automation generation completed successfully.");
-    } catch (error) {
-      const message = getUserFriendlyError(error, "Generation failed. Please try again.");
+    } catch (requestError) {
+      const message = getUserFriendlyError(requestError, "Generation failed. Please try again.");
       setStatus(message);
       setStatusTone("error");
       toastError(message);
@@ -78,44 +86,35 @@ export default function AutomationControlPage() {
     }
   }
 
-  async function runPublish() {
-    const payload = topic.trim();
-    if (!payload) {
-      const message = "Enter publish content first.";
-      setStatus(message);
-      setStatusTone("error");
-      toastError(message);
-      return;
-    }
-
-    setStatus("Running safe publish...");
+  async function runGenerateFromData() {
+    setStatus("Reviewing live performance data...");
     setStatusTone("neutral");
-    setPublishing(true);
+    setStrategyHint("");
+    setGenerating(true);
     try {
-      const result = await publishPost({ content: payload });
-      const mode = result.mode ? ` [mode: ${result.mode}]` : "";
-      const message = `${result.reason}${mode}`;
-      setStatus(message);
-      setStatusTone(result.published ? "success" : "neutral");
-      if (result.published) {
-        toastSuccess(message);
-      } else {
-        toastInfo(message);
+      const result = await generateContentFromData();
+      setLastRun(result);
+      if (result.growthDecision?.strategy) {
+        setStrategyHint(`Strategy: ${result.growthDecision.strategy} - ${result.growthDecision.reason}`);
       }
-    } catch (error) {
-      const message = getUserFriendlyError(error, "Publish failed. Please try again.");
+      const message = "Generated a new draft from stored post and metric data.";
+      setStatus(message);
+      setStatusTone("success");
+      toastSuccess(message);
+    } catch (requestError) {
+      const message = getUserFriendlyError(requestError, "Generation from live data failed. Please try again.");
       setStatus(message);
       setStatusTone("error");
       toastError(message);
     } finally {
-      setPublishing(false);
+      setGenerating(false);
     }
   }
 
   if (loading) {
     return (
       <div className="stack">
-        <Card title="Automation Control" subtitle="Daily-safe automation with manual override">
+        <Card title="Automation Control" subtitle="Daily-safe automation with approval-first publishing">
           <SkeletonCard lines={5} />
         </Card>
       </div>
@@ -133,23 +132,23 @@ export default function AutomationControlPage() {
   if (!settings) {
     return (
       <div className="stack">
-        <EmptyState title="Automation context unavailable" message="Try refreshing to load publishing safety controls." />
+        <EmptyState title="Automation context unavailable" message="Try refreshing to load generation safety controls." />
       </div>
     );
   }
 
   return (
     <div className="stack">
-      <Card title="Automation Control" subtitle="Daily-safe automation with manual override">
+      <Card title="Automation Control" subtitle="Daily-safe automation with approval-first publishing">
         <p className="muted">
           Safe mode: {settings.safeMode ? "Enabled" : "Disabled"} | Publish enabled: {settings.publishEnabled ? "Yes" : "No"} |
           Max posts/day: {settings.maxPostsPerDay} | Max actions/day: {settings.maxActionsPerDay}
         </p>
 
-        {!topic.trim() && (
+        {!topic.trim() && !lastRun && (
           <EmptyState
             title="No automation task queued"
-            message="Enter a topic to run generation or provide publish content to run the safe publish command."
+            message="Enter a topic to generate a draft, or use the data-driven option to build from recent metrics."
           />
         )}
 
@@ -158,19 +157,29 @@ export default function AutomationControlPage() {
             className="input"
             value={topic}
             onChange={(event) => setTopic(event.target.value)}
-            placeholder="Enter topic or publish content"
+            placeholder="Enter a topic to generate the next approval draft"
           />
         </div>
         <div className="actions">
-          <Button onClick={runGenerate} disabled={!topic.trim() || generating || publishing}>
-            {generating ? "Running Generate..." : "Run Generate"}
+          <Button onClick={runGenerate} disabled={!topic.trim() || generating}>
+            {generating ? "Generating..." : "Run Generate"}
           </Button>
-          <Button onClick={runPublish} disabled={!topic.trim() || generating || publishing}>
-            {publishing ? "Running Publish..." : "Run Safe Publish"}
+          <Button onClick={runGenerateFromData} disabled={generating} className="btn--ghost">
+            {generating ? "Reviewing..." : "Generate From Data"}
           </Button>
         </div>
         <p className={`status status--${statusTone}`}>{status}</p>
         {strategyHint && <p className="muted">{strategyHint}</p>}
+
+        {lastRun && (
+          <div className="automation-summary">
+            <p className="automation-summary__title">Latest automation draft</p>
+            <p className="automation-summary__meta">Topic: {lastRun.topic}</p>
+            <p className="automation-summary__meta">Primary hook: {lastRun.hook}</p>
+            <p className="automation-summary__body">{lastRun.content}</p>
+            <p className="muted">Publishing is approval-only. Review the draft in Content Studio before posting.</p>
+          </div>
+        )}
       </Card>
     </div>
   );
